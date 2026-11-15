@@ -215,6 +215,8 @@ pub struct ActivityInput {
     pub steps: Vec<String>,
     #[serde(default)]
     pub cautions: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -355,6 +357,8 @@ pub struct EngineStatus {
     pub phase: String,
     pub plan_id: Option<String>,
     pub plan_name: Option<String>,
+    /// 当前计划启用的提醒方式（notification / popup / sound / fullscreen / widget）
+    pub reminder_methods: Vec<String>,
     pub work_seconds: i64,
     pub work_target_seconds: i64,
     pub work_remaining_seconds: i64,
@@ -386,6 +390,7 @@ pub struct EngineStatus {
 pub struct AppInfo {
     pub name: String,
     pub version: String,
+    pub author: String,
     pub identifier: String,
     pub db_path: String,
     pub data_dir: String,

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Button,
   Card,
   Col,
@@ -9,6 +10,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Row,
   Segmented,
   Select,
@@ -20,19 +22,21 @@ import {
 import { api } from "@/api/ipc";
 import { useAppStore } from "@/stores/useAppStore";
 import type { Activity } from "@/types/contracts";
-import { formatDuration, minutesToSeconds } from "@/utils/format";
+import { formatDuration, minutesToSeconds, secondsToMinutes } from "@/utils/format";
 
 const CATEGORIES = ["全部", "身体活动", "肩颈放松", "腰背放松", "眼部放松", "健康习惯", "自定义"];
 
 const CREATE_CATEGORIES = CATEGORIES.slice(1);
 
 interface ActivityFormValues {
+  id?: string;
   name: string;
   category: string;
   minutes: number;
   description?: string;
   steps?: string;
   cautions?: string;
+  image?: string;
 }
 
 export function ActivitiesPage() {
@@ -41,9 +45,12 @@ export function ActivitiesPage() {
   const runEngineAction = useAppStore((s) => s.runEngineAction);
 
   const [category, setCategory] = useState("全部");
+  const [keyword, setKeyword] = useState("");
   const [detail, setDetail] = useState<Activity | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<Activity | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [form] = Form.useForm<ActivityFormValues>();
 
   useEffect(() => {
@@ -51,15 +58,65 @@ export function ActivitiesPage() {
   }, [refreshActivities]);
 
   const filtered = useMemo(() => {
-    if (category === "全部") return activities;
-    return activities.filter((a) => a.category === category);
-  }, [activities, category]);
+    const kw = keyword.trim().toLowerCase();
+    return activities.filter((a) => {
+      const matchCategory = category === "全部" || a.category === category;
+      const matchKeyword =
+        !kw ||
+        a.name.toLowerCase().includes(kw) ||
+        (a.description ?? "").toLowerCase().includes(kw);
+      return matchCategory && matchKeyword;
+    });
+  }, [activities, category, keyword]);
 
-  const submitCreate = async () => {
-    const values = await form.validateFields();
+  const openCreate = () => {
+    setEditing(null);
+    setModalOpen(true);
+  };
+
+  const openEdit = (activity: Activity) => {
+    setEditing(activity);
+    setModalOpen(true);
+  };
+
+  // 弹窗 destroyOnClose，表单在关闭时被销毁；等弹窗打开、Form 挂载后再回填。
+  const applyFormValues = () => {
+    if (editing) {
+      form.setFieldsValue({
+        id: editing.id,
+        name: editing.name,
+        category: editing.category,
+        minutes: secondsToMinutes(editing.durationSeconds),
+        description: editing.description ?? "",
+        steps: editing.steps.join("\n"),
+        cautions: editing.cautions ?? "",
+        image: editing.image ?? "",
+      });
+      return;
+    }
+    form.setFieldsValue({
+      name: "",
+      category: "身体活动",
+      minutes: 3,
+      description: "",
+      steps: "从座位站起\n走动 3 分钟",
+      cautions: "",
+      image: "",
+    });
+  };
+
+  const submitForm = async () => {
+    let values: ActivityFormValues;
+    try {
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
     setSaving(true);
+    setSaveError(null);
     try {
       await api.saveActivity({
+        id: editing?.id,
         name: values.name.trim(),
         category: values.category,
         description: values.description?.trim() || null,
@@ -69,13 +126,27 @@ export function ActivitiesPage() {
           .map((line) => line.trim())
           .filter(Boolean),
         cautions: values.cautions?.trim() || null,
-        enabled: true,
+        image: values.image?.trim() || null,
+        enabled: editing ? editing.enabled : true,
       });
       await refreshActivities();
-      setCreateOpen(false);
+      setModalOpen(false);
+      setEditing(null);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : JSON.stringify(error));
     } finally {
       setSaving(false);
     }
+  };
+
+  const toggleEnabled = async (activity: Activity) => {
+    await api.saveActivity({ ...activity, enabled: !activity.enabled });
+    await refreshActivities();
+  };
+
+  const remove = async (activity: Activity) => {
+    await api.deleteActivity(activity.id);
+    await refreshActivities();
   };
 
   return (
@@ -87,22 +158,17 @@ export function ActivitiesPage() {
             value={category}
             onChange={(value) => setCategory(String(value))}
           />
-          <Button
-            type="primary"
-            onClick={() => {
-              form.setFieldsValue({
-                name: "",
-                category: "身体活动",
-                minutes: 3,
-                description: "",
-                steps: "从座位站起\n走动 3 分钟",
-                cautions: "",
-              });
-              setCreateOpen(true);
-            }}
-          >
-            自定义活动
-          </Button>
+          <Space wrap>
+            <Input.Search
+              placeholder="搜索活动名称"
+              allowClear
+              style={{ width: 180 }}
+              onChange={(event) => setKeyword(event.target.value)}
+            />
+            <Button type="primary" onClick={openCreate}>
+              自定义活动
+            </Button>
+          </Space>
         </Space>
       </Card>
 
@@ -121,15 +187,20 @@ export function ActivitiesPage() {
                     {!activity.enabled ? <Tag color="default">已禁用</Tag> : null}
                   </Space>
                 }
-                extra={<Typography.Text type="secondary">{formatDuration(activity.durationSeconds)}</Typography.Text>}
+                extra={
+                  <Typography.Text type="secondary">
+                    {formatDuration(activity.durationSeconds)}
+                  </Typography.Text>
+                }
               >
                 <Typography.Paragraph type="secondary" ellipsis={{ rows: 2 }}>
                   {activity.description ?? "暂无活动说明"}
                 </Typography.Paragraph>
-                <Space>
+                <Space wrap>
                   <Button
                     type="primary"
                     size="small"
+                    disabled={!activity.enabled}
                     onClick={() => runEngineAction(() => api.startBreak(activity.id))}
                   >
                     立即开始
@@ -137,6 +208,26 @@ export function ActivitiesPage() {
                   <Button size="small" onClick={() => setDetail(activity)}>
                     查看指导
                   </Button>
+                  <Button size="small" onClick={() => openEdit(activity)}>
+                    编辑
+                  </Button>
+                  <Button size="small" onClick={() => void toggleEnabled(activity)}>
+                    {activity.enabled ? "禁用" : "启用"}
+                  </Button>
+                  {!activity.isBuiltin ? (
+                    <Popconfirm
+                      title="删除该活动？"
+                      description="删除后不可恢复"
+                      okText="删除"
+                      okButtonProps={{ danger: true }}
+                      cancelText="取消"
+                      onConfirm={() => void remove(activity)}
+                    >
+                      <Button size="small" danger>
+                        删除
+                      </Button>
+                    </Popconfirm>
+                  ) : null}
                 </Space>
               </Card>
             </Col>
@@ -156,6 +247,7 @@ export function ActivitiesPage() {
           <Button
             key="start"
             type="primary"
+            disabled={!detail?.enabled}
             onClick={() => {
               if (detail) {
                 runEngineAction(() => api.startBreak(detail.id));
@@ -176,6 +268,21 @@ export function ActivitiesPage() {
               </Typography.Text>
             </Space>
             <Typography.Text>{detail.description ?? "暂无活动说明"}</Typography.Text>
+            {detail.image ? (
+              <img
+                src={detail.image}
+                alt={detail.name}
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: 220,
+                  borderRadius: 8,
+                  objectFit: "cover",
+                }}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
+              />
+            ) : null}
             <Divider style={{ margin: "4px 0" }} />
             <Typography.Text strong>操作步骤</Typography.Text>
             {detail.steps.length ? (
@@ -195,15 +302,29 @@ export function ActivitiesPage() {
       </Modal>
 
       <Modal
-        open={createOpen}
-        title="自定义活动"
+        open={modalOpen}
+        title={editing ? "编辑活动" : "自定义活动"}
         centered
-        onCancel={() => setCreateOpen(false)}
-        onOk={submitCreate}
+        onCancel={() => {
+          setModalOpen(false);
+          setEditing(null);
+        }}
+        afterOpenChange={(open) => {
+          if (open) applyFormValues();
+        }}
+        onOk={() => void submitForm()}
         okText="保存"
         confirmLoading={saving}
         destroyOnClose
       >
+        {saveError ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`保存失败：${saveError}`}
+          />
+        ) : null}
         <Form form={form} layout="vertical" preserve={false}>
           <Row gutter={12}>
             <Col span={12}>
@@ -230,6 +351,13 @@ export function ActivitiesPage() {
           </Form.Item>
           <Form.Item name="cautions" label="注意事项">
             <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item
+            name="image"
+            label="图片链接"
+            tooltip="可选：填网络图片地址；留空则不显示配图"
+          >
+            <Input placeholder="https://… 图片链接" allowClear />
           </Form.Item>
         </Form>
       </Modal>

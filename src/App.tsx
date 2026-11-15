@@ -1,20 +1,24 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
-import { App as AntdApp, Alert, ConfigProvider, Layout, Menu, Space, Spin, Tag, Typography } from "antd";
+import { App as AntdApp, Alert, Button, ConfigProvider, Layout, Menu, Space, Spin, Tag, Typography } from "antd";
 import {
   AppstoreOutlined,
   AreaChartOutlined,
   DashboardOutlined,
   SettingOutlined,
   AlertOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
 } from "@ant-design/icons";
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import "./App.css";
+import { api } from "@/api/ipc";
 import { BreakDialog } from "@/components/BreakDialog";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ReminderModal } from "@/components/ReminderModal";
 import { useAppStore } from "@/stores/useAppStore";
 import { buildTheme } from "@/theme";
-import { PHASE_COLOR, PHASE_LABEL, formatClock } from "@/utils/format";
+import { MODE_LABEL, MODE_TAG_COLOR, PHASE_COLOR, PHASE_LABEL, formatClock } from "@/utils/format";
 
 // 页面按需加载：首屏只带首页，提醒中心 / 活动 / 统计（含 ECharts）/ 设置各自成块，
 // 避免单个 chunk 达到 2MB 以上（PRD 11.4 启动时间要求）。
@@ -44,8 +48,15 @@ const NAV_ITEMS = [
 
 function HeaderSummary() {
   const status = useAppStore((s) => s.status);
+  const plans = useAppStore((s) => s.plans);
+  const activities = useAppStore((s) => s.activities);
+  const runEngineAction = useAppStore((s) => s.runEngineAction);
+
   if (!status) return null;
+
   const phaseLabel = PHASE_LABEL[status.phase] ?? status.phase;
+  const activePlan = plans.find((p) => p.id === status.planId);
+  const modeLabel = activePlan ? MODE_LABEL[activePlan.mode] ?? activePlan.mode : null;
   const right =
     status.phase === "working"
       ? `下次提醒 ${formatClock(status.workRemainingSeconds)}`
@@ -57,11 +68,62 @@ function HeaderSummary() {
           ? `活动中 ${formatClock(status.breakRemainingSeconds)}`
           : "未计时";
 
+  const primary = (() => {
+    switch (status.phase) {
+      case "idle":
+        return {
+          label: "开始提醒",
+          icon: <PlayCircleOutlined />,
+          primary: true,
+          onClick: () => runEngineAction(() => api.start()),
+        };
+      case "paused":
+      case "suspended":
+        return {
+          label: "恢复提醒",
+          icon: <PlayCircleOutlined />,
+          primary: true,
+          onClick: () => runEngineAction(() => api.resume()),
+        };
+      case "reminding":
+        return {
+          label: "开始活动",
+          icon: <PlayCircleOutlined />,
+          primary: true,
+          onClick: () =>
+            runEngineAction(() => api.startBreak(activities.find((a) => a.enabled)?.id ?? null)),
+        };
+      case "working":
+        return {
+          label: "暂停提醒",
+          icon: <PauseCircleOutlined />,
+          primary: false,
+          onClick: () => runEngineAction(() => api.pause()),
+        };
+      default:
+        return null;
+    }
+  })();
+
   return (
-    <Space size={12}>
-      <Tag color={PHASE_COLOR[status.phase]}>{phaseLabel}</Tag>
-      <Typography.Text type="secondary">{status.planName ?? "未选择计划"}</Typography.Text>
-      <Typography.Text type="secondary">{right}</Typography.Text>
+    <Space size={12} style={{ width: "100%", justifyContent: "space-between" }}>
+      <Space size={12}>
+        <Typography.Text strong>{status.planName ?? "未选择计划"}</Typography.Text>
+        {modeLabel ? (
+          <Tag color={MODE_TAG_COLOR[activePlan?.mode ?? ""] ?? "default"}>{modeLabel}</Tag>
+        ) : null}
+        <Tag color={PHASE_COLOR[status.phase]}>{phaseLabel}</Tag>
+        <Typography.Text type="secondary">{right}</Typography.Text>
+      </Space>
+      {primary ? (
+        <Button
+          type={primary.primary ? "primary" : "default"}
+          icon={primary.icon}
+          onClick={primary.onClick}
+        >
+          {primary.label}
+        </Button>
+      ) : null}
     </Space>
   );
 }
@@ -76,8 +138,11 @@ function Shell() {
     <Layout className="app-shell">
       <Layout.Sider width={208} theme="light" className="app-sider">
         <div className="app-brand">
-          <div className="app-brand-name">SitHalt</div>
-          <div className="app-brand-sub">息坐 · 伏案有时，休憩亦有时</div>
+          <img className="app-brand-logo" src="/logo.png" alt="SitHalt" />
+          <div className="app-brand-text">
+            <div className="app-brand-name">SitHalt</div>
+            <div className="app-brand-sub">息坐 · 伏案有时，休憩亦有时</div>
+          </div>
         </div>
         <Menu
           mode="inline"
@@ -111,6 +176,7 @@ function Shell() {
               </div>
             }
           >
+            <ErrorBoundary>
             <Routes>
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
@@ -119,6 +185,7 @@ function Shell() {
               <Route path="/stats" element={<StatsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
+          </ErrorBoundary>
           </Suspense>
         </Layout.Content>
       </Layout>

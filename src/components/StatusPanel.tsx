@@ -9,6 +9,16 @@ import { api } from "@/api/ipc";
 import { useAppStore } from "@/stores/useAppStore";
 import { PHASE_COLOR, PHASE_LABEL, formatClock, formatDuration } from "@/utils/format";
 
+/** 每个阶段对应的大白话说明，避免新用户只看到状态术语看不懂。 */
+const PHASE_HINT: Record<string, string> = {
+  idle: "还没开始计时，点击「开始提醒」后会按计划记录伏案时长。",
+  working: "正在记录这一轮伏案时间，到点会提醒你起身活动。",
+  reminding: "已经坐够一轮了，起来活动一下吧。",
+  break: "正在活动休息，完成后回到下一轮工作。",
+  paused: "提醒已暂停，点击「恢复提醒」继续计时。",
+  suspended: "计时已挂起，回到座位或工作时间后会自动恢复。",
+};
+
 export function StatusPanel() {
   const status = useAppStore((s) => s.status);
   const activities = useAppStore((s) => s.activities);
@@ -26,8 +36,8 @@ export function StatusPanel() {
   const snoozed = (status.snoozeRemainingSeconds ?? 0) > 0;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Space wrap size={12} align="center">
+    <div className="status-hero">
+      <div className="status-hero-head">
         <Tag color={PHASE_COLOR[status.phase]} style={{ fontSize: 14, padding: "2px 10px" }}>
           {PHASE_LABEL[status.phase] ?? status.phase}
         </Tag>
@@ -47,7 +57,9 @@ export function StatusPanel() {
           </Tag>
         ) : null}
         {!status.inWorkWindow ? <Tag>非工作时间</Tag> : null}
-      </Space>
+      </div>
+
+      <div className="status-hero-hint">{PHASE_HINT[status.phase] ?? ""}</div>
 
       {(status.phase === "working" ||
         status.phase === "paused" ||
@@ -93,7 +105,7 @@ export function StatusPanel() {
         </div>
       )}
 
-      <Space wrap>
+      <div className="status-hero-actions">
         {status.phase === "idle" && (
           <Button
             type="primary"
@@ -121,11 +133,6 @@ export function StatusPanel() {
             恢复提醒
           </Button>
         )}
-        {(status.phase === "working" || status.phase === "reminding") && (
-          <Button icon={<PauseCircleOutlined />} onClick={() => runEngineAction(() => api.pause())}>
-            暂停提醒
-          </Button>
-        )}
         {status.phase === "reminding" && (
           <>
             <Button
@@ -143,6 +150,11 @@ export function StatusPanel() {
             <Button onClick={() => runEngineAction(() => api.skip())}>跳过本次</Button>
           </>
         )}
+        {(status.phase === "working" || status.phase === "reminding") && (
+          <Button icon={<PauseCircleOutlined />} onClick={() => runEngineAction(() => api.pause())}>
+            暂停提醒
+          </Button>
+        )}
         {status.phase === "break" && (
           <Button onClick={() => runEngineAction(() => api.finishBreak(false))}>提前结束</Button>
         )}
@@ -157,7 +169,7 @@ export function StatusPanel() {
         <Button onClick={() => runEngineAction(() => api.setDnd(status.dndRemainingSeconds ? 0 : 30))}>
           {status.dndRemainingSeconds ? "关闭勿扰" : "勿扰 30 分钟"}
         </Button>
-      </Space>
-    </Space>
+      </div>
+    </div>
   );
 }

@@ -155,6 +155,11 @@ impl Engine {
             phase: m.phase.as_str().to_string(),
             plan_id: inner.plan.as_ref().map(|p| p.id.clone()),
             plan_name: inner.plan.as_ref().map(|p| p.name.clone()),
+            reminder_methods: inner
+                .plan
+                .as_ref()
+                .map(|p| p.reminder_methods.clone())
+                .unwrap_or_default(),
             work_seconds: m.work_seconds as i64,
             work_target_seconds: m.work_target() as i64,
             work_remaining_seconds: m.remaining_work_seconds() as i64,
@@ -480,7 +485,8 @@ impl Engine {
                     .clone()
                     .map(|name| format!("{name} 的一个工作周期结束，活动 3~5 分钟再继续。"))
                     .unwrap_or_else(|| "已经连续坐了一段时间，起来活动一下。".to_string());
-                if self.notification_enabled().await {
+                let wants_notification = status.reminder_methods.iter().any(|m| m == "notification");
+                if wants_notification && self.notification_enabled().await {
                     self.notify(title, &body);
                 }
                 db::record_event(
@@ -881,6 +887,178 @@ impl Engine {
         drop(inner);
         self.emit_status(&status);
         Ok(status)
+    }
+
+    /// 当前在用计划被编辑后，重新从库载入计划快照与时间表。
+    /// 只刷新配置（工作日、时段、时长、提醒方式等），不清空当前已累计的久坐进度、
+    /// 也不切换计划；若保存的不是当前在用计划，则不做改动。
+    pub async fn reload_plan_if_active(&self, plan_id: &str) -> AppResult<EngineStatus> {
+        let current_id = {
+            let inner = self.inner.lock().await;
+            inner.plan.as_ref().map(|p| p.id.clone())
+        };
+        let Some(current_id) = current_id else {
+            return Ok(self.status().await);
+        };
+        if current_id != plan_id {
+            return Ok(self.status().await);
+        }
+
+        let plan = db::get_plan(&self.pool, plan_id).await?;
+        let schedules = db::list_work_schedules(&self.pool, Some(&plan.id))
+            .await
+            .unwrap_or_default();
+
+        let mut inner = self.inner.lock().await;
+        inner.machine.set_plan(PlanSpec {
+            work_seconds: plan.work_seconds as u64,
+            break_seconds: plan.break_seconds as u64,
+            completion_mode: plan.completion_mode.clone(),
+            repeat_times: plan.repeat_times as u32,
+            repeat_interval_seconds: plan.repeat_interval_seconds as u64,
+        });
+        inner.plan = Some(plan);
+        inner.schedules = schedules;
+        let status = Self::status_of(&inner);
+        drop(inner);
+        self.emit_status(&status);
+        Ok(status)
+    }
+
+    /// 被删除的计划正是当前在用计划时，把引擎快照回退到库内默认计划；
+    /// 库内已无计划则清空计划并回到未启动，避免继续用已删计划判断工作时间。
+    pub async fn detach_deleted_plan(&self, deleted_id: &str) -> AppResult<EngineStatus> {
+        let current_id = {
+            let inner = self.inner.lock().await;
+            inner.plan.as_ref().map(|p| p.id.clone())
+        };
+        let Some(current_id) = current_id else {
+            return Ok(self.status().await);
+        };
+        if current_id != deleted_id {
+            return Ok(self.status().await);
+        }
+
+        let mut inner = self.inner.lock().await;
+        self.flush_session(&mut inner, "plan_deleted").await;
+        if let Some(b) = inner.break_state.take() {
+            drop(inner);
+            self.record_break_session(&b, 0, "interrupted").await;
+            inner = self.inner.lock().await;
+        }
+
+        let plan = db::default_plan(&self.pool).await?;
+        match plan {
+            Some(p) => {
+                inner.machine.set_plan(PlanSpec {
+                    work_seconds: p.work_seconds as u64,
+                    break_seconds: p.break_seconds as u64,
+                    completion_mode: p.completion_mode.clone(),
+                    repeat_times: p.repeat_times as u32,
+                    repeat_interval_seconds: p.repeat_interval_seconds as u64,
+                });
+                inner.machine.work_seconds = 0;
+                inner.machine.phase = Phase::Idle;
+                inner.awaiting_confirm = false;
+                inner.suspend_reason = None;
+                inner.plan = Some(p.clone());
+                inner.schedules = db::list_work_schedules(&self.pool, Some(&p.id))
+                    .await
+                    .unwrap_or_default();
+                let status = Self::status_of(&inner);
+                drop(inner);
+                let _ = db::set_active_plan(&self.pool, &p.id).await;
+                db::record_event(
+                    &self.pool,
+                    "plan_detached",
+                    json!({ "deletedId": deleted_id, "fallbackPlanId": p.id }),
+                )
+                .await;
+                self.emit_status(&status);
+                Ok(status)
+            }
+            None => {
+                inner.machine.stop();
+                inner.machine.plan = None;
+                inner.plan = None;
+                inner.schedules = Vec::new();
+                inner.awaiting_confirm = false;
+                inner.suspend_reason = None;
+                let status = Self::status_of(&inner);
+                drop(inner);
+                let _ = db::set_setting(&self.pool, "activePlanId", json!(null)).await;
+                db::record_event(
+                    &self.pool,
+                    "plan_detached",
+                    json!({ "deletedId": deleted_id, "fallbackPlanId": null }),
+                )
+                .await;
+                self.emit_status(&status);
+                Ok(status)
+            }
+        }
+    }
+
+    /// 数据被整体重置后，清空当前引擎快照并回退到库内默认计划（重新播种的内置计划）。
+    pub async fn reset_to_default(&self) -> AppResult<EngineStatus> {
+        let mut inner = self.inner.lock().await;
+        self.flush_session(&mut inner, "data_reset").await;
+        if let Some(b) = inner.break_state.take() {
+            drop(inner);
+            self.record_break_session(&b, 0, "interrupted").await;
+            inner = self.inner.lock().await;
+        }
+
+        let plan = db::default_plan(&self.pool).await?;
+        match plan {
+            Some(p) => {
+                inner.machine.set_plan(PlanSpec {
+                    work_seconds: p.work_seconds as u64,
+                    break_seconds: p.break_seconds as u64,
+                    completion_mode: p.completion_mode.clone(),
+                    repeat_times: p.repeat_times as u32,
+                    repeat_interval_seconds: p.repeat_interval_seconds as u64,
+                });
+                inner.machine.work_seconds = 0;
+                inner.machine.phase = Phase::Idle;
+                inner.awaiting_confirm = false;
+                inner.suspend_reason = None;
+                inner.plan = Some(p.clone());
+                inner.schedules = db::list_work_schedules(&self.pool, Some(&p.id))
+                    .await
+                    .unwrap_or_default();
+                let status = Self::status_of(&inner);
+                drop(inner);
+                let _ = db::set_active_plan(&self.pool, &p.id).await;
+                db::record_event(
+                    &self.pool,
+                    "data_reset",
+                    json!({ "fallbackPlanId": p.id }),
+                )
+                .await;
+                self.emit_status(&status);
+                Ok(status)
+            }
+            None => {
+                inner.machine.stop();
+                inner.machine.plan = None;
+                inner.plan = None;
+                inner.schedules = Vec::new();
+                inner.awaiting_confirm = false;
+                inner.suspend_reason = None;
+                let status = Self::status_of(&inner);
+                drop(inner);
+                let _ = db::set_setting(&self.pool, "activePlanId", json!(null)).await;
+                db::record_event(
+                    &self.pool,
+                    "data_reset",
+                    json!({ "fallbackPlanId": null }),
+                )
+                .await;
+                self.emit_status(&status);
+                Ok(status)
+            }
+        }
     }
 
     /// 勿扰模式：minutes<=0 表示取消

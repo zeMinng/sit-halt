@@ -28,6 +28,7 @@ interface AppStore {
   refreshToday: () => Promise<void>;
   refreshPlans: () => Promise<void>;
   refreshActivities: () => Promise<void>;
+  refreshSettings: () => Promise<void>;
   updateSetting: (key: string, value: unknown) => Promise<void>;
   runEngineAction: (action: () => Promise<EngineStatus>) => Promise<void>;
   clearError: () => void;
@@ -73,16 +74,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
         subscribed = true;
         await events.onStatus((next) => {
           set({ status: next });
-          if (next.phase === "break" || next.phase === "idle") {
+          // 仅活动进行中需要实时刷新今日累计；空闲（idle）阶段数据不会变化，
+          // 每秒拉取会返回全新的趋势数组引用，导致图表被反复重建、悬停提示被清掉。
+          if (next.phase === "break") {
             void get().refreshToday();
           }
         });
         await events.onReminder((payload) => {
           set({ status: payload });
+          const methods = payload.reminderMethods ?? [];
+          const wantsSound = methods.length === 0 || methods.includes("sound");
           const soundEnabled = get().settings.soundEnabled !== false;
           const volume = Number(get().settings.soundVolume ?? 0.7);
-          if (soundEnabled) {
-            playReminderSound(volume);
+          const wave = get().settings.soundWave;
+          if (wantsSound && soundEnabled) {
+            playReminderSound(volume, wave);
           }
         });
         await events.onRecorded(() => {
@@ -126,6 +132,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  refreshSettings: async () => {
+    try {
+      set({ settings: await api.getSettings() });
+    } catch (error) {
+      set({ error: describe(error) });
+    }
+  },
+
   updateSetting: async (key, value) => {
     try {
       const settings = await api.setSetting(key, value);
@@ -140,6 +154,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const status = await action();
       set({ status });
       void get().refreshToday();
+      // 引擎动作可能改变当前在用计划等设置（如切换计划），回读设置避免本地缓存的 activePlanId 滞后
+      void get().refreshSettings();
     } catch (error) {
       set({ error: describe(error) });
     }

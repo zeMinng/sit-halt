@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
-import { Card, Col, Empty, Input, Row, Segmented, Select, Space, Table, Tag, Typography } from "antd";
+import { useEffect, useState, type ComponentProps } from "react";
+import { Card, Col, DatePicker, Descriptions, Empty, Input, Modal, Row, Segmented, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
+
+type RangeValue = NonNullable<ComponentProps<typeof DatePicker.RangePicker>["value"]>;
 
 import { api } from "@/api/ipc";
 import { StatCard } from "@/components/StatCard";
 import { TrendChart } from "@/components/TrendChart";
-import type { ActivitySession, DailyPoint, MonthSummary, SittingSession } from "@/types/contracts";
+import type { ActivitySession, DailyPoint, MonthSummary, MonthWeeklyPoint, SittingSession } from "@/types/contracts";
 import {
   COMPLETION_LABEL,
   formatDateTime,
@@ -34,10 +36,12 @@ export function StatsPage() {
   const [trendData, setTrendData] = useState<DailyPoint[]>([]);
   const [month, setMonth] = useState<MonthSummary | null>(null);
   const [sessions, setSessions] = useState<ActivitySession[]>([]);
+  const [detailSession, setDetailSession] = useState<ActivitySession | null>(null);
   const [sitting, setSitting] = useState<SittingSession[]>([]);
   const [category, setCategory] = useState("");
   const [completion, setCompletion] = useState("");
   const [keyword, setKeyword] = useState("");
+  const [range, setRange] = useState<RangeValue | null>(null);
   const [page, setPage] = useState(1);
 
   useEffect(() => {
@@ -49,6 +53,9 @@ export function StatsPage() {
     void api.sittingHistory(20).then(setSitting);
   }, []);
 
+  const from = range?.[0]?.format("YYYY-MM-DD") ?? null;
+  const to = range?.[1]?.format("YYYY-MM-DD") ?? null;
+
   useEffect(() => {
     void api
       .history({
@@ -57,9 +64,11 @@ export function StatsPage() {
         category: category || null,
         keyword: keyword || null,
         completion: completion || null,
+        from,
+        to,
       })
       .then(setSessions);
-  }, [page, category, completion, keyword]);
+  }, [page, category, completion, keyword, from, to]);
 
   const historyColumns: ColumnsType<ActivitySession> = [
     { title: "活动名称", dataIndex: "activityName", key: "activityName" },
@@ -147,6 +156,24 @@ export function StatsPage() {
   const totalActivity = trendData.reduce((sum, d) => sum + d.activitySeconds, 0);
   const totalCount = trendData.reduce((sum, d) => sum + d.activityCount, 0);
 
+  const weeklyColumns: ColumnsType<MonthWeeklyPoint> = [
+    { title: "周", dataIndex: "week", key: "week" },
+    {
+      title: "活动次数",
+      dataIndex: "activityCount",
+      key: "activityCount",
+      align: "right",
+      render: (v: number) => `${v} 次`,
+    },
+    {
+      title: "活动时长",
+      dataIndex: "activitySeconds",
+      key: "activitySeconds",
+      align: "right",
+      render: (v: number) => formatDuration(v),
+    },
+  ];
+
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card
@@ -180,6 +207,13 @@ export function StatsPage() {
               hint={`月度久坐 ${formatDuration(month?.sittingSeconds ?? 0)}`}
             />
           </Col>
+          <Col xs={12} md={6}>
+            <StatCard
+              title="月度完成率"
+              value={month?.completionRate != null ? `${month.completionRate}%` : "—"}
+              hint={month?.activityCount != null ? `已完成 ${month.activityCount} 次` : undefined}
+            />
+          </Col>
         </Row>
         {trendData.some(
           (d) => d.sittingSeconds > 0 || d.activitySeconds > 0 || d.activityCount > 0,
@@ -190,6 +224,20 @@ export function StatsPage() {
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description="这段时间还没有数据，开始一次计时后这里会有趋势"
           />
+        )}
+        {month && month.weekly.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>
+              每周活动汇总
+            </Typography.Text>
+            <Table<MonthWeeklyPoint>
+              size="small"
+              rowKey="week"
+              columns={weeklyColumns}
+              dataSource={month.weekly}
+              pagination={false}
+            />
+          </div>
         )}
       </Card>
 
@@ -216,6 +264,15 @@ export function StatsPage() {
                 setPage(1);
               }}
             />
+            <DatePicker.RangePicker
+              allowClear
+              format="YYYY-MM-DD"
+              value={range}
+              onChange={(vals) => {
+                setRange(vals);
+                setPage(1);
+              }}
+            />
             <Input.Search
               placeholder="搜索活动名称"
               allowClear
@@ -234,6 +291,10 @@ export function StatsPage() {
           scroll={{ x: "max-content" }}
           columns={historyColumns}
           dataSource={sessions}
+          onRow={(record) => ({
+            onClick: () => setDetailSession(record),
+            style: { cursor: "pointer" },
+          })}
           pagination={{
             current: page,
             pageSize: 10,
@@ -264,6 +325,51 @@ export function StatsPage() {
           }}
         />
       </Card>
+
+      <Modal
+        open={Boolean(detailSession)}
+        title="活动详情"
+        onCancel={() => setDetailSession(null)}
+        footer={null}
+      >
+        {detailSession && (
+          <Descriptions size="small" column={1}>
+            <Descriptions.Item label="活动名称">{detailSession.activityName}</Descriptions.Item>
+            <Descriptions.Item label="分类">{detailSession.category ?? "—"}</Descriptions.Item>
+            <Descriptions.Item label="开始时间">
+              {formatDateTime(detailSession.startedAt)}
+            </Descriptions.Item>
+            <Descriptions.Item label="结束时间">
+              {detailSession.endedAt ? formatDateTime(detailSession.endedAt) : "—"}
+            </Descriptions.Item>
+            <Descriptions.Item label="实际时长">
+              {formatDuration(detailSession.durationSeconds)}
+            </Descriptions.Item>
+            <Descriptions.Item label="计划时长">
+              {formatDuration(detailSession.plannedSeconds)}
+            </Descriptions.Item>
+            <Descriptions.Item label="来源">
+              {({ reminder: "提醒", manual: "立即活动", self_reported: "自述" } as Record<string, string>)[
+                detailSession.source
+              ] ?? detailSession.source}
+            </Descriptions.Item>
+            <Descriptions.Item label="完成状态">
+              <Tag
+                color={
+                  detailSession.completion === "completed"
+                    ? "green"
+                    : detailSession.completion === "partial"
+                      ? "orange"
+                      : "default"
+                }
+              >
+                {COMPLETION_LABEL[detailSession.completion] ?? detailSession.completion}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="关联计划">{detailSession.planId ?? "—"}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
     </Space>
   );
 }

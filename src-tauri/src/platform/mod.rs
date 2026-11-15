@@ -59,7 +59,33 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::time::Duration;
+
+    // CoreGraphics 全局事件源：读取自最后一次键鼠事件以来的秒数。
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state_id: i64, event_type: u32) -> f64;
+    }
+
+    // kCGEventSourceStateHIDSystemState：系统级 HID 输入会话（CFIndex）。
+    const HID_SYSTEM_STATE: i64 = 1;
+    // kCGAnyInputEventType：任意输入事件类型（CGEventType -1 的位模式）。
+    const ANY_INPUT_EVENT: u32 = u32::MAX;
+
+    pub fn idle_seconds() -> Option<u64> {
+        // SAFETY: 两个参数均为常量枚举值，函数只读事件源状态、无写入与资源移交。
+        let idle = unsafe { CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, ANY_INPUT_EVENT) };
+        if idle.is_finite() && idle >= 0.0 {
+            Some(Duration::from_secs_f64(idle.max(0.0)).as_secs())
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 mod imp {
     pub fn idle_seconds() -> Option<u64> {
         None

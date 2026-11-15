@@ -2,7 +2,7 @@
 
 伏案有时，休憩亦有时。
 
-一款 Windows 桌面久坐提醒应用：按设定的工作节奏计时，到点用系统通知 + 页面提醒催你起身活动，并记录久坐与活动数据。
+一款 macOS / Windows 桌面久坐提醒应用：按设定的工作节奏计时，到点用系统通知 + 页面提醒催你起身活动，并记录久坐与活动数据。
 
 ## 技术栈
 
@@ -31,7 +31,7 @@ src-tauri/              Rust 侧
   migrations/           0001_init.sql（8 张表 + 索引）
   src/db/mod.rs         连接池、迁移、种子数据、全部 SQL
   src/engine/           计时状态机（machine.rs 为纯逻辑，mod.rs 为调度与事件）
-  src/platform/mod.rs   Windows 空闲检测（GetLastInputInfo）
+  src/platform/mod.rs   跨平台空闲检测（Win32 GetLastInputInfo / macOS CoreGraphics）
   src/commands.rs       34 个 IPC 命令
   src/lib.rs            Tauri 装配：托盘、通知、自启、事件注册
 
@@ -53,13 +53,15 @@ cargo fmt --manifest-path src-tauri/Cargo.toml
 
 ## 数据位置
 
-- 数据库：`%APPDATA%\com.sithalt.app\sithalt.db`
-- 备份：`%APPDATA%\com.sithalt.app\backups\sithalt-<时间戳>.db`
+- 数据库：Windows `%APPDATA%\com.sithalt.app\sithalt.db`；macOS `~/Library/Application Support/com.sithalt.app/sithalt.db`
+- 备份：对应目录下 `backups/sithalt-<时间戳>.db`
 
 ## 运行时约定
 
 - 关窗只隐藏到托盘，不退出进程。
 - 提醒可延后、跳过或直接开始活动，不强制阻塞。
-- 非 Windows 平台空闲检测返回“未知”，不会误判为离开。
+- macOS 已接入 CoreGraphics 空闲检测；Linux 空闲检测返回“未知”，不会误判为离开。
+
+macOS 打包步骤见 `docs/mac-打包指南.md`。
 
 PRD 原文见 `reqDoc.md`，已落地能力与已知偏差见 `docs/实现进度与待确认项.md`。

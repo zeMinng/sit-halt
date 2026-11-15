@@ -82,3 +82,18 @@ export const COMPLETION_MODE_LABEL: Record<string, string> = {
   manual: "手动点击完成",
   ask: "倒计时结束后询问",
 };
+
+/** 提醒计划运行模式标签与标签配色（与提醒中心表格一致）。 */
+export const MODE_LABEL: Record<string, string> = {
+  interval: "固定间隔",
+  pomodoro: "番茄",
+  smart: "智能",
+  custom: "自定义",
+};
+
+export const MODE_TAG_COLOR: Record<string, string> = {
+  interval: "default",
+  pomodoro: "orange",
+  smart: "blue",
+  custom: "purple",
+};

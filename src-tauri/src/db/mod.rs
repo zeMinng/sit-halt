@@ -3,6 +3,7 @@ use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc};
 use serde_json::json;
+use sqlx::{Column, Row};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tauri::{AppHandle, Manager};
@@ -20,6 +21,25 @@ pub struct Database {
     pub path: PathBuf,
 }
 
+/// 待恢复的库文件（放在数据库同级，启动时检测到即完成替换）。
+const PENDING_RESTORE_SUFFIX: &str = "db.restore-pending";
+
+fn open_pool(db_path: &PathBuf) -> AppResult<SqlitePool> {
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .foreign_keys(true)
+        .busy_timeout(StdDuration::from_secs(5));
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(StdDuration::from_secs(10))
+        .connect_lazy_with(options);
+
+    Ok(pool)
+}
+
 /// 数据库初始化：文件落在系统推荐的应用数据目录，避免升级 / 卸载丢数据（PRD 8.2）。
 pub async fn init(app: &AppHandle) -> AppResult<Database> {
     let data_dir = app
@@ -30,18 +50,10 @@ pub async fn init(app: &AppHandle) -> AppResult<Database> {
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("sithalt.db");
 
-    let options = SqliteConnectOptions::new()
-        .filename(&db_path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .foreign_keys(true)
-        .busy_timeout(StdDuration::from_secs(5));
+    // 启动时先把上次待恢复的备份落位，再正常建池迁移。
+    apply_pending_restore(&db_path).await?;
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .acquire_timeout(StdDuration::from_secs(10))
-        .connect_with(options)
-        .await?;
+    let pool = open_pool(&db_path)?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
 
@@ -321,6 +333,15 @@ async fn seed_if_empty(pool: &SqlitePool) -> AppResult<()> {
         ("backupIntervalDays", json!(7)),
         ("backupKeep", json!(5)),
         ("activePlanId", json!(null)),
+        (
+            "shortcuts",
+            json!({
+                "toggleMain": "Ctrl+Alt+S",
+                "pauseResume": "Ctrl+Alt+P",
+                "startBreak": "Ctrl+Alt+B",
+                "dnd": "Ctrl+Alt+D"
+            })
+        ),
     ];
     for (key, value) in defaults {
         let exists: Option<String> =
@@ -491,6 +512,20 @@ pub async fn delete_plan(pool: &SqlitePool, id: &str) -> AppResult<()> {
         .bind(id)
         .execute(pool)
         .await?;
+
+    // 若被删的正是当前启用计划，清空启用标记，避免下次启动回退到不存在的计划
+    let active: Option<String> =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key = 'activePlanId'")
+            .fetch_optional(pool)
+            .await?;
+    if let Some(raw) = active {
+        if let Ok(Some(aid)) = serde_json::from_str::<Option<String>>(&raw) {
+            if aid == id {
+                set_setting(pool, "activePlanId", json!(null)).await?;
+            }
+        }
+    }
+
     record_event(pool, "plan_deleted", json!({ "planId": id })).await;
     Ok(())
 }
@@ -528,6 +563,35 @@ pub async fn list_work_schedules(
     }
 }
 
+/// 把 [start, end) 时段展开到 1440 分钟；end < start 按跨零点处理。
+fn fills_minutes(start: i64, end: i64) -> [bool; 1440] {
+    let mut minute = [false; 1440];
+    if start <= end {
+        for t in start..end {
+            minute[t as usize] = true;
+        }
+    } else {
+        for t in start..1440 {
+            minute[t as usize] = true;
+        }
+        for t in 0..end {
+            minute[t as usize] = true;
+        }
+    }
+    minute
+}
+
+/// 两个时段是否在任意一分钟上重叠（含跨零点）。
+fn intervals_overlap(a: (i64, i64), b: (i64, i64)) -> bool {
+    let am = fills_minutes(a.0, a.1);
+    let bm = fills_minutes(b.0, b.1);
+    (0..1440).any(|t| am[t] && bm[t])
+}
+
+fn fmt_minute(m: i64) -> String {
+    format!("{:02}:{:02}", m / 60, m % 60)
+}
+
 pub async fn save_work_schedule(
     pool: &SqlitePool,
     input: WorkScheduleInput,
@@ -560,6 +624,32 @@ pub async fn save_work_schedule(
         Some(id) if !id.trim().is_empty() => id,
         _ => Uuid::new_v4().to_string(),
     };
+
+    // 同计划、同工作日的其他已启用时段不得与本次时段重叠（跨零点一并纳入比较）。
+    if input.enabled {
+        let others: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT id, start_minute, end_minute FROM work_schedules
+             WHERE plan_id = ? AND weekday = ? AND enabled = 1 AND id <> ?",
+        )
+        .bind(&input.plan_id)
+        .bind(input.weekday)
+        .bind(&id)
+        .fetch_all(pool)
+        .await?;
+        for (_oid, os, oe) in others {
+            if intervals_overlap(
+                (input.start_minute, input.end_minute),
+                (os, oe),
+            ) {
+                return Err(AppError::Invalid(format!(
+                    "该工作日已存在重叠时段 {}–{}，请先调整或禁用",
+                    fmt_minute(os),
+                    fmt_minute(oe)
+                )));
+            }
+        }
+    }
+
     let now = now_iso();
     sqlx::query(
         r#"INSERT INTO work_schedules (id, plan_id, weekday, start_minute, end_minute, enabled, created_at)
@@ -692,6 +782,111 @@ pub fn list_backups(db_path: &PathBuf) -> AppResult<Vec<BackupInfo>> {
     Ok(items)
 }
 
+fn pending_path(db_path: &PathBuf) -> PathBuf {
+    let stem = db_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sithalt.db".into());
+    db_path.with_file_name(format!("{stem}.{PENDING_RESTORE_SUFFIX}"))
+}
+
+/// 校验备份文件是可识别的 SitHalt 数据库：可只读打开、含迁移记录与核心数据表。
+pub async fn validate_backup_file(path: &PathBuf) -> AppResult<()> {
+    if !path.exists() {
+        return Err(AppError::Invalid(format!("备份文件不存在：{}", path.display())));
+    }
+    if path.extension().map(|e| e != "db").unwrap_or(true) {
+        return Err(AppError::Invalid("备份文件必须是 .db 文件".into()));
+    }
+
+    let options = SqliteConnectOptions::new().filename(path).read_only(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_lazy_with(options);
+
+    let migration_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await?;
+    if migration_count == 0 {
+        pool.close().await;
+        return Err(AppError::Invalid(
+            "备份文件缺少迁移记录，不是有效的 SitHalt 数据库".into(),
+        ));
+    }
+
+    for table in [
+        "reminder_plans",
+        "activities",
+        "activity_sessions",
+        "sitting_sessions",
+    ] {
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_optional(&pool)
+        .await?;
+        if exists.is_none() {
+            pool.close().await;
+            return Err(AppError::Invalid(format!("备份文件缺少核心数据表：{table}")));
+        }
+    }
+    pool.close().await;
+    Ok(())
+}
+
+/// 恢复前准备：校验备份 → 兜底备份当前库 → 放入待恢复文件。
+/// 运行中的连接池仍占用当前库，真正的文件替换留到下次启动（PRD 4.9）。
+pub async fn prepare_restore(
+    pool: &SqlitePool,
+    db_path: &PathBuf,
+    backup_file: &str,
+) -> AppResult<BackupInfo> {
+    let candidate = PathBuf::from(backup_file);
+    let backup_dir = std::fs::canonicalize(backup_dir(db_path))
+        .unwrap_or_else(|_| backup_dir(db_path));
+    let canonical_file = std::fs::canonicalize(&candidate)
+        .map_err(|_| AppError::Invalid(format!("备份文件不存在：{backup_file}")))?;
+    if !canonical_file.starts_with(&backup_dir) {
+        return Err(AppError::Invalid("只能恢复应用生成的本地备份".into()));
+    }
+
+    validate_backup_file(&canonical_file).await?;
+
+    // 恢复前先兜底备份当前数据，便于回退；兜底是最新快照，不会被清理策略删掉。
+    let keep = read_setting_i64(pool, "backupKeep", 5).await.max(1) as usize;
+    let fallback = backup_now(pool, db_path, keep).await?;
+
+    let pending = pending_path(db_path);
+    std::fs::copy(&canonical_file, &pending)?;
+
+    record_event(pool, "db_restore_prepared", json!({ "backup": backup_file })).await;
+    Ok(fallback)
+}
+
+/// 启动时检测待恢复文件：校验后用它替换当前库，并清理 WAL / SHM 临时文件。
+pub async fn apply_pending_restore(db_path: &PathBuf) -> AppResult<()> {
+    let pending = pending_path(db_path);
+    if !pending.exists() {
+        return Ok(());
+    }
+    validate_backup_file(&pending).await?;
+
+    let file_name = db_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sithalt.db".into());
+    for suffix in ["", "-wal", "-shm"] {
+        let stale = db_path.with_file_name(format!("{file_name}{suffix}"));
+        let _ = std::fs::remove_file(stale);
+    }
+
+    std::fs::copy(&pending, db_path)?;
+    let _ = std::fs::remove_file(&pending);
+    Ok(())
+}
+
 /// 启动时按设置决定是否需要备份。间隔与保留份数都来自设置项，缺省 7 天 / 5 份。
 pub async fn maybe_auto_backup(pool: &SqlitePool, db_path: &PathBuf) {
     let interval_days = read_setting_i64(pool, "backupIntervalDays", 7).await;
@@ -810,13 +1005,14 @@ pub async fn save_activity(pool: &SqlitePool, input: ActivityInput) -> AppResult
         r#"INSERT INTO activities
            (id, name, category, description, duration_seconds, steps, image, cautions,
             enabled, is_builtin, sort_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              category = excluded.category,
              description = excluded.description,
              duration_seconds = excluded.duration_seconds,
              steps = excluded.steps,
+             image = excluded.image,
              cautions = excluded.cautions,
              enabled = excluded.enabled,
              sort_order = excluded.sort_order,
@@ -828,6 +1024,7 @@ pub async fn save_activity(pool: &SqlitePool, input: ActivityInput) -> AppResult
     .bind(&input.description)
     .bind(input.duration_seconds)
     .bind(json!(input.steps).to_string())
+    .bind(&input.image)
     .bind(&input.cautions)
     .bind(input.enabled)
     .bind(input.sort_order)
@@ -1143,11 +1340,55 @@ pub async fn month_summary(pool: &SqlitePool) -> AppResult<serde_json::Value> {
     .fetch_one(pool)
     .await?;
 
+    // 月度完成率口径与今日一致：已完成次数 / 当月触发的提醒次数。
+    let expected: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM app_events
+         WHERE event_type = 'reminder_triggered' AND created_at >= ?",
+    )
+    .bind(&start)
+    .fetch_one(pool)
+    .await?;
+    let completion_rate = if expected > 0 {
+        Some(
+            ((count as f64 / expected as f64) * 100.0)
+                .min(100.0)
+                .round(),
+        )
+    } else {
+        None
+    };
+
+    // 每周活动汇总（按 ISO 周号分组，UTC 日期）。
+    let weekly_rows = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT strftime('%Y-%W', started_at) AS week,
+                COUNT(*) FILTER (WHERE completion = 'completed'),
+                COALESCE(SUM(CASE WHEN completion = 'completed' THEN duration_seconds ELSE 0 END), 0)
+         FROM activity_sessions
+         WHERE started_at >= ?
+         GROUP BY week
+         ORDER BY week",
+    )
+    .bind(&start)
+    .fetch_all(pool)
+    .await?;
+    let weekly: Vec<serde_json::Value> = weekly_rows
+        .into_iter()
+        .map(|(week, activity_count, activity_seconds)| {
+            json!({
+                "week": week,
+                "activityCount": activity_count,
+                "activitySeconds": activity_seconds,
+            })
+        })
+        .collect();
+
     Ok(json!({
         "month": format!("{}-{:02}", today.year(), today.month()),
         "sittingSeconds": sitting,
         "activitySeconds": activity,
         "activityCount": count,
+        "completionRate": completion_rate,
+        "weekly": weekly,
         "daily": trend_points(pool, today.day() as i64).await?,
     }))
 }
@@ -1159,6 +1400,8 @@ pub async fn history_sessions(
     category: Option<String>,
     keyword: Option<String>,
     completion: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
 ) -> AppResult<Vec<ActivitySession>> {
     let mut sql = String::from("SELECT * FROM activity_sessions WHERE 1 = 1");
     if category.is_some() {
@@ -1169,6 +1412,13 @@ pub async fn history_sessions(
     }
     if completion.is_some() {
         sql.push_str(" AND completion = ?");
+    }
+    // started_at 为 UTC ISO8601，取前 10 位日期做前缀比较（YYYY-MM-DD）
+    if from.is_some() {
+        sql.push_str(" AND substr(started_at, 1, 10) >= ?");
+    }
+    if to.is_some() {
+        sql.push_str(" AND substr(started_at, 1, 10) <= ?");
     }
     sql.push_str(" ORDER BY started_at DESC LIMIT ? OFFSET ?");
 
@@ -1181,6 +1431,12 @@ pub async fn history_sessions(
     }
     if let Some(c) = completion {
         query = query.bind(c);
+    }
+    if let Some(f) = from {
+        query = query.bind(f);
+    }
+    if let Some(t) = to {
+        query = query.bind(t);
     }
     query = query.bind(limit).bind(offset);
 
@@ -1214,6 +1470,289 @@ pub async fn count_rows(pool: &SqlitePool, table: &str) -> AppResult<i64> {
     }
     let sql = format!("SELECT COUNT(*) FROM {table}");
     Ok(sqlx::query_scalar(&sql).fetch_one(pool).await?)
+}
+
+// ---------------------------------------------------------------- 导出 / 导入
+
+const EXPORT_SCHEMA_VERSION: i64 = 1;
+
+const PLAN_COLS: &[&str] = &[
+    "id",
+    "name",
+    "description",
+    "mode",
+    "work_seconds",
+    "break_seconds",
+    "reminder_methods",
+    "repeat_interval_seconds",
+    "repeat_times",
+    "snooze_seconds",
+    "completion_mode",
+    "idle_detection",
+    "idle_threshold_seconds",
+    "work_start",
+    "work_end",
+    "work_days",
+    "smart_enabled",
+    "is_builtin",
+    "sort_order",
+    "created_at",
+    "updated_at",
+];
+
+const SCHEDULE_COLS: &[&str] = &[
+    "id",
+    "plan_id",
+    "weekday",
+    "start_minute",
+    "end_minute",
+    "enabled",
+    "created_at",
+];
+
+const ACTIVITY_COLS: &[&str] = &[
+    "id",
+    "name",
+    "category",
+    "description",
+    "duration_seconds",
+    "steps",
+    "image",
+    "cautions",
+    "enabled",
+    "is_builtin",
+    "sort_order",
+    "created_at",
+    "updated_at",
+];
+
+const SESSION_COLS: &[&str] = &[
+    "id",
+    "activity_id",
+    "activity_name",
+    "category",
+    "plan_id",
+    "started_at",
+    "ended_at",
+    "duration_seconds",
+    "planned_seconds",
+    "completion",
+    "source",
+    "created_at",
+];
+
+const SITTING_COLS: &[&str] = &[
+    "id",
+    "plan_id",
+    "started_at",
+    "ended_at",
+    "duration_seconds",
+    "interrupted_by",
+    "created_at",
+];
+
+const STATS_COLS: &[&str] = &[
+    "date",
+    "sitting_seconds",
+    "activity_count",
+    "activity_seconds",
+    "longest_sitting_seconds",
+    "expected_activities",
+    "completion_rate",
+    "computed_at",
+];
+
+const SETTING_COLS: &[&str] = &["key", "value", "updated_at"];
+
+fn cell_to_json(row: &sqlx::sqlite::SqliteRow, name: &str) -> serde_json::Value {
+    if let Ok(v) = row.try_get::<String, _>(name) {
+        return json!(v);
+    }
+    if let Ok(v) = row.try_get::<i64, _>(name) {
+        return json!(v);
+    }
+    if let Ok(v) = row.try_get::<f64, _>(name) {
+        return json!(v);
+    }
+    serde_json::Value::Null
+}
+
+async fn table_to_json(pool: &SqlitePool, table: &str) -> AppResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query(&format!("SELECT * FROM {table}"))
+        .fetch_all(pool)
+        .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut map = serde_json::Map::new();
+        for col in row.columns() {
+            map.insert(col.name().to_string(), cell_to_json(&row, col.name()));
+        }
+        out.push(serde_json::Value::Object(map));
+    }
+    Ok(out)
+}
+
+/// 导出全部业务数据为可序列化的 JSON 对象（写文件由命令层负责）。
+pub async fn export_all_data(pool: &SqlitePool) -> AppResult<serde_json::Value> {
+    Ok(json!({
+        "schemaVersion": EXPORT_SCHEMA_VERSION,
+        "app": "SitHalt",
+        "exportedAt": now_iso(),
+        "settings": table_to_json(pool, "app_settings").await?,
+        "plans": table_to_json(pool, "reminder_plans").await?,
+        "schedules": table_to_json(pool, "work_schedules").await?,
+        "activities": table_to_json(pool, "activities").await?,
+        "activitySessions": table_to_json(pool, "activity_sessions").await?,
+        "sittingSessions": table_to_json(pool, "sitting_sessions").await?,
+        "dailyStats": table_to_json(pool, "daily_stats").await?,
+    }))
+}
+
+fn json_to_option_string(v: serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s),
+        other => Some(other.to_string()),
+    }
+}
+
+async fn insert_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    table: &str,
+    cols: &[&str],
+    rows: Option<&serde_json::Value>,
+) -> AppResult<()> {
+    let Some(rows) = rows.and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let placeholders = cols.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({placeholders})",
+        cols.join(",")
+    );
+    for row in rows {
+        let Some(obj) = row.as_object() else { continue };
+        let mut query = sqlx::query(&sql);
+        for col in cols {
+            let value = obj.get(*col).cloned().unwrap_or(serde_json::Value::Null);
+            query = query.bind(json_to_option_string(value));
+        }
+        query.execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+
+/// 导入 JSON 数据：校验版本与必备数据 → 事务内清空业务表并按依赖顺序写回。
+/// 调用方需在导入前先自动备份当前库，失败时事务回滚、原始数据不受影响。
+pub async fn import_all_data(pool: &SqlitePool, payload: &serde_json::Value) -> AppResult<()> {
+    let version = payload
+        .get("schemaVersion")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if version != EXPORT_SCHEMA_VERSION {
+        return Err(AppError::Invalid(format!("不支持的数据版本：{version}")));
+    }
+    for key in ["plans", "activities"] {
+        if payload.get(key).and_then(|v| v.as_array()).is_none() {
+            return Err(AppError::Invalid(format!("导出文件缺少 {key} 数据")));
+        }
+    }
+
+    let mut tx = pool.begin().await?;
+
+    // 逆外键顺序清空
+    for table in [
+        "work_schedules",
+        "activity_sessions",
+        "sitting_sessions",
+        "daily_stats",
+        "activities",
+        "reminder_plans",
+        "app_settings",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    insert_rows(&mut tx, "reminder_plans", PLAN_COLS, payload.get("plans")).await?;
+    insert_rows(&mut tx, "work_schedules", SCHEDULE_COLS, payload.get("schedules")).await?;
+    insert_rows(&mut tx, "activities", ACTIVITY_COLS, payload.get("activities")).await?;
+    insert_rows(&mut tx, "activity_sessions", SESSION_COLS, payload.get("activitySessions")).await?;
+    insert_rows(&mut tx, "sitting_sessions", SITTING_COLS, payload.get("sittingSessions")).await?;
+    insert_rows(&mut tx, "daily_stats", STATS_COLS, payload.get("dailyStats")).await?;
+    insert_rows(&mut tx, "app_settings", SETTING_COLS, payload.get("settings")).await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 恢复出厂：事务内清空全部业务表，再重新播种内置计划 / 活动与默认设置。
+/// 调用方需在前端完成二次确认；本函数不做备份。
+pub async fn reset_all_data(pool: &SqlitePool) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    for table in [
+        "work_schedules",
+        "activity_sessions",
+        "sitting_sessions",
+        "daily_stats",
+        "app_events",
+        "activities",
+        "reminder_plans",
+        "app_settings",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+
+    // 库已清空，重新生成内置计划、内置活动与默认设置。
+    seed_if_empty(pool).await?;
+    Ok(())
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// 把活动记录导出为 CSV 文本（带 UTF-8 BOM，便于 Excel 直接打开）。
+pub async fn export_activity_csv(pool: &SqlitePool) -> AppResult<String> {
+    let rows = sqlx::query_as::<_, ActivitySessionRow>(
+        "SELECT * FROM activity_sessions ORDER BY started_at DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut csv = String::from("\u{FEFF}");
+    csv.push_str("开始时间,活动名称,分类,计划ID,时长(秒),计划时长(秒),完成状态,来源,结束时间\n");
+    for r in rows {
+        let line = [
+            r.started_at,
+            r.activity_name,
+            r.category.unwrap_or_default(),
+            r.plan_id.unwrap_or_default(),
+            r.duration_seconds.to_string(),
+            r.planned_seconds.to_string(),
+            r.completion,
+            r.source,
+            r.ended_at.unwrap_or_default(),
+        ]
+        .iter()
+        .map(|f| csv_field(f))
+        .collect::<Vec<_>>()
+        .join(",");
+        csv.push_str(&line);
+        csv.push('\n');
+    }
+    Ok(csv)
 }
 
 #[cfg(test)]
@@ -1350,5 +1889,264 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn export_import_roundtrip_preserves_data() {
+        let pool = memory_pool().await;
+        seed_if_empty(&pool).await.unwrap();
+
+        set_setting(&pool, "theme", json!("dark")).await.unwrap();
+        let plan_id = list_plans(&pool).await.unwrap()[0].id.clone();
+        sqlx::query(
+            "INSERT INTO activity_sessions
+               (id, activity_id, activity_name, category, plan_id, started_at, ended_at,
+                duration_seconds, planned_seconds, completion, source, created_at)
+             VALUES ('s1', NULL, '起身行走', '身体活动', ?, ?, NULL, 120, 300, 'completed', 'reminder', ?)",
+        )
+        .bind(&plan_id)
+        .bind(now_iso())
+        .bind(now_iso())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let exported = export_all_data(&pool).await.unwrap();
+
+        // 清空计划与记录，模拟库被改写
+        sqlx::query("DELETE FROM activity_sessions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM reminder_plans")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let wiped: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM reminder_plans")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(wiped, 0);
+
+        import_all_data(&pool, &exported).await.unwrap();
+
+        let plans = list_plans(&pool).await.unwrap();
+        assert!(!plans.is_empty(), "导入后计划应还原");
+        let sessions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM activity_sessions WHERE id = 's1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(sessions, 1);
+        let theme = get_setting_raw(&pool, "theme").await.unwrap();
+        assert_eq!(theme.as_deref(), Some("\"dark\""));
+
+        // 不支持的数据版本应被拒绝，且不破坏当前数据
+        let mut bad = exported.clone();
+        bad["schemaVersion"] = json!(999);
+        assert!(import_all_data(&pool, &bad).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn schedule_overlap_is_rejected() {
+        let pool = memory_pool().await;
+        seed_if_empty(&pool).await.unwrap();
+        let plan_id = list_plans(&pool).await.unwrap()[0].id.clone();
+
+        save_work_schedule(
+            &pool,
+            WorkScheduleInput {
+                id: None,
+                plan_id: plan_id.clone(),
+                weekday: 3,
+                start_minute: 9 * 60,
+                end_minute: 12 * 60,
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        // 完全包含在已有时段内 → 拒绝
+        let inside = save_work_schedule(
+            &pool,
+            WorkScheduleInput {
+                id: None,
+                plan_id: plan_id.clone(),
+                weekday: 3,
+                start_minute: 10 * 60,
+                end_minute: 11 * 60,
+                enabled: true,
+            },
+        )
+        .await;
+        assert!(inside.is_err(), "重叠时段应被拒绝");
+
+        // 相邻不重叠（12:00 紧接着开始）→ 允许
+        let adjacent = save_work_schedule(
+            &pool,
+            WorkScheduleInput {
+                id: None,
+                plan_id: plan_id.clone(),
+                weekday: 3,
+                start_minute: 12 * 60,
+                end_minute: 13 * 60,
+                enabled: true,
+            },
+        )
+        .await;
+        assert!(adjacent.is_ok());
+
+        // 跨零点时段与凌晨时段重叠 → 拒绝
+        save_work_schedule(
+            &pool,
+            WorkScheduleInput {
+                id: None,
+                plan_id: plan_id.clone(),
+                weekday: 4,
+                start_minute: 22 * 60,
+                end_minute: 2 * 60,
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+        let early = save_work_schedule(
+            &pool,
+            WorkScheduleInput {
+                id: None,
+                plan_id: plan_id.clone(),
+                weekday: 4,
+                start_minute: 1 * 60,
+                end_minute: 3 * 60,
+                enabled: true,
+            },
+        )
+        .await;
+        assert!(early.is_err(), "跨零点重叠应被拒绝");
+
+        // 禁用时段不参与重叠校验
+        let disabled = save_work_schedule(
+            &pool,
+            WorkScheduleInput {
+                id: None,
+                plan_id: plan_id.clone(),
+                weekday: 3,
+                start_minute: 10 * 60,
+                end_minute: 11 * 60,
+                enabled: false,
+            },
+        )
+        .await;
+        assert!(disabled.is_ok());
+    }
+
+    #[tokio::test]
+    async fn reset_all_data_clears_and_reseeds() {
+        let pool = memory_pool().await;
+        seed_if_empty(&pool).await.unwrap();
+
+        set_setting(&pool, "theme", json!("dark")).await.unwrap();
+        let plan_id = list_plans(&pool).await.unwrap()[0].id.clone();
+        sqlx::query(
+            "INSERT INTO activity_sessions
+               (id, activity_id, activity_name, category, plan_id, started_at, ended_at,
+                duration_seconds, planned_seconds, completion, source, created_at)
+             VALUES ('s1', NULL, '起身行走', '身体活动', ?, ?, NULL, 120, 300, 'completed', 'reminder', ?)",
+        )
+        .bind(&plan_id)
+        .bind(now_iso())
+        .bind(now_iso())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        reset_all_data(&pool).await.unwrap();
+
+        let session_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM activity_sessions")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let sitting_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sitting_sessions")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let plan_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM reminder_plans")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let activity_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM activities")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(session_count, 0);
+        assert_eq!(sitting_count, 0);
+        assert!(plan_count > 0, "应重新播种内置计划");
+        assert!(activity_count > 0, "应重新播种内置活动");
+
+        // 自定义设置被清空，回到默认主题
+        let theme = get_setting_raw(&pool, "theme").await.unwrap();
+        assert_eq!(theme, Some(json!("system").to_string()));
+    }
+
+    #[tokio::test]
+    async fn activity_image_roundtrip() {
+        let pool = memory_pool().await;
+        seed_if_empty(&pool).await.unwrap();
+
+        let saved = save_activity(
+            &pool,
+            ActivityInput {
+                id: None,
+                name: "测试动作".into(),
+                category: "身体活动".into(),
+                description: None,
+                duration_seconds: 60,
+                steps: vec!["步骤一".into()],
+                cautions: None,
+                image: Some("https://example.com/a.png".into()),
+                enabled: true,
+                sort_order: 99,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.image, Some("https://example.com/a.png".into()));
+
+        // 更新时清空图片，应写回 NULL
+        let updated = save_activity(
+            &pool,
+            ActivityInput {
+                id: Some(saved.id.clone()),
+                name: saved.name,
+                category: saved.category,
+                description: saved.description,
+                duration_seconds: saved.duration_seconds,
+                steps: saved.steps,
+                cautions: saved.cautions,
+                image: None,
+                enabled: saved.enabled,
+                sort_order: saved.sort_order,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.image, None);
+    }
+
+    #[tokio::test]
+    async fn export_csv_has_bom_and_header() {
+        let pool = memory_pool().await;
+        seed_if_empty(&pool).await.unwrap();
+        let csv = export_activity_csv(&pool).await.unwrap();
+        assert!(csv.starts_with("\u{FEFF}"), "CSV 应带 UTF-8 BOM");
+        assert!(csv.contains("开始时间,活动名称,分类"));
     }
 }

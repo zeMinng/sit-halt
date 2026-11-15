@@ -8,6 +8,7 @@ use crate::models::{
     ReminderPlan, ReminderPlanInput, SittingSession, TodayStats, WorkSchedule, WorkScheduleInput,
 };
 use crate::platform;
+use crate::shortcuts;
 use crate::state::AppState;
 
 #[tauri::command]
@@ -20,6 +21,7 @@ pub fn app_info(state: State<'_, AppState>, app: tauri::AppHandle) -> AppInfo {
     AppInfo {
         name: "SitHalt".into(),
         version: env!("CARGO_PKG_VERSION").into(),
+        author: "zeMinng".into(),
         identifier: app.config().identifier.clone(),
         db_path: state.db_path.display().to_string(),
         data_dir,
@@ -61,12 +63,18 @@ pub async fn save_plan(
     state: State<'_, AppState>,
     plan: ReminderPlanInput,
 ) -> AppResult<ReminderPlan> {
-    db::save_plan(&state.db, plan).await
+    let saved = db::save_plan(&state.db, plan).await?;
+    // 若编辑的是当前在用计划，刷新引擎内存快照，避免旧工作日/时段继续参与工作时间判断
+    let _ = state.engine.reload_plan_if_active(&saved.id).await;
+    Ok(saved)
 }
 
 #[tauri::command]
 pub async fn delete_plan(state: State<'_, AppState>, id: String) -> AppResult<()> {
-    db::delete_plan(&state.db, &id).await
+    db::delete_plan(&state.db, &id).await?;
+    // 若删的是当前在用计划，引擎回退到默认计划（或清空），避免继续引用已删快照
+    let _ = state.engine.detach_deleted_plan(&id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -120,6 +128,14 @@ pub async fn backup_now(state: State<'_, AppState>) -> AppResult<BackupInfo> {
 #[tauri::command]
 pub async fn list_backups(state: State<'_, AppState>) -> AppResult<Vec<BackupInfo>> {
     db::list_backups(&state.db_path)
+}
+
+#[tauri::command]
+pub async fn restore_backup(
+    state: State<'_, AppState>,
+    file: String,
+) -> AppResult<BackupInfo> {
+    db::prepare_restore(&state.db, &state.db_path, &file).await
 }
 
 // ---------------------------------------------------------------- 活动库
@@ -233,6 +249,8 @@ pub async fn history_sessions(
     category: Option<String>,
     keyword: Option<String>,
     completion: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
 ) -> AppResult<Vec<ActivitySession>> {
     db::history_sessions(
         &state.db,
@@ -241,6 +259,8 @@ pub async fn history_sessions(
         category,
         keyword,
         completion,
+        from,
+        to,
     )
     .await
 }
@@ -278,4 +298,86 @@ pub async fn set_autostart(
     let now_enabled = manager.is_enabled().unwrap_or(enabled);
     db::set_setting(&state.db, "autostart", serde_json::json!(now_enabled)).await?;
     Ok(now_enabled)
+}
+
+// ---------------------------------------------------------------- 全局快捷键
+
+#[tauri::command]
+pub async fn get_shortcuts(state: State<'_, AppState>) -> AppResult<Value> {
+    Ok(Value::Object(shortcuts::load_map(&state.db).await))
+}
+
+#[tauri::command]
+pub async fn set_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    action: String,
+    combo: String,
+) -> AppResult<Value> {
+    let map = shortcuts::set_shortcut(&app, &state.db, &action, &combo).await?;
+    Ok(Value::Object(map))
+}
+
+#[tauri::command]
+pub async fn reset_shortcuts(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let map = shortcuts::reset_shortcuts(&app, &state.db).await?;
+    Ok(Value::Object(map))
+}
+
+// ---------------------------------------------------------------- 数据导出 / 导入
+
+/// 把全部业务数据导出为 JSON，写入前端对话框选定的目标文件。
+#[tauri::command]
+pub async fn export_json(state: State<'_, AppState>, target: String) -> AppResult<()> {
+    let data = db::export_all_data(&state.db).await?;
+    let text = serde_json::to_string_pretty(&data)
+        .map_err(|e| crate::error::AppError::Invalid(format!("序列化导出数据失败：{e}")))?;
+    std::fs::write(&target, text)?;
+    Ok(())
+}
+
+/// 把活动记录导出为 CSV，写入前端对话框选定的目标文件。
+#[tauri::command]
+pub async fn export_csv(state: State<'_, AppState>, target: String) -> AppResult<()> {
+    let csv = db::export_activity_csv(&state.db).await?;
+    std::fs::write(&target, csv)?;
+    Ok(())
+}
+
+/// 从 JSON 文件导入全部业务数据；导入前自动兜底备份当前库，失败时事务回滚、原始数据保留。
+#[tauri::command]
+pub async fn import_json(
+    state: State<'_, AppState>,
+    source: String,
+) -> AppResult<BackupInfo> {
+    let text = std::fs::read_to_string(&source)?;
+    let payload: Value = serde_json::from_str(&text)
+        .map_err(|e| crate::error::AppError::Invalid(format!("JSON 解析失败：{e}")))?;
+
+    let keep = db::get_setting_raw(&state.db, "backupKeep")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<i64>(&raw).ok())
+        .unwrap_or(5)
+        .max(1) as usize;
+    let fallback = db::backup_now(&state.db, &state.db_path, keep).await?;
+    db::import_all_data(&state.db, &payload).await?;
+    db::record_event(
+        &state.db,
+        "data_imported",
+        serde_json::json!({ "source": source }),
+    )
+    .await;
+    Ok(fallback)
+}
+
+/// 恢复出厂：清空全部业务数据并重新播种内置计划 / 活动 / 默认设置；引擎快照回退到新默认计划。不做备份。
+#[tauri::command]
+pub async fn reset_all_data(state: State<'_, AppState>) -> AppResult<EngineStatus> {
+    db::reset_all_data(&state.db).await?;
+    state.engine.reset_to_default().await
 }

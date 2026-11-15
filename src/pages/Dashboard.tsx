@@ -1,5 +1,10 @@
 import { useEffect } from "react";
 import { Card, Col, Empty, Row, Space, Table, Tag, Typography } from "antd";
+import {
+  BarChartOutlined,
+  BellOutlined,
+  ClockCircleOutlined,
+} from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 
 import { StatusPanel } from "@/components/StatusPanel";
@@ -13,6 +18,24 @@ import {
   formatDateTime,
   formatDuration,
 } from "@/utils/format";
+
+const FEATURES = [
+  {
+    icon: <ClockCircleOutlined />,
+    title: "久坐计时",
+    desc: "按周期累计伏案时长，空闲自动挂起、回座位自动恢复",
+  },
+  {
+    icon: <BellOutlined />,
+    title: "多种提醒",
+    desc: "通知、弹窗、声音、全屏等到点提醒，方式可按计划配置",
+  },
+  {
+    icon: <BarChartOutlined />,
+    title: "活动与统计",
+    desc: "记录每次起身活动，汇总今日久坐、活动次数与趋势",
+  },
+];
 
 const sessionColumns: ColumnsType<ActivitySession> = [
   { title: "活动名称", dataIndex: "activityName", key: "activityName" },
@@ -71,8 +94,39 @@ export function DashboardPage() {
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Card size="small" className="hero-banner">
+        <Row gutter={[16, 16]}>
+          <Col flex="auto">
+            <Typography.Title level={4} style={{ margin: 0 }}>
+              久坐提醒，适时起身活动
+            </Typography.Title>
+            <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0", maxWidth: 660 }}>
+              后台持续记录伏案时长，到点提醒起身活动；配合活动指导与每日统计，减少连续久坐、
+              养成规律的工作节奏。
+            </Typography.Paragraph>
+          </Col>
+        </Row>
+        <Row gutter={[12, 12]} style={{ marginTop: 16 }}>
+          {FEATURES.map((feature) => (
+            <Col xs={24} md={8} key={feature.title}>
+              <div className="hero-feature">
+                <div className="hero-feature-icon">{feature.icon}</div>
+                <div>
+                  <div className="hero-feature-title">{feature.title}</div>
+                  <div className="hero-feature-desc">{feature.desc}</div>
+                </div>
+              </div>
+            </Col>
+          ))}
+        </Row>
+      </Card>
+
+      <Card title="当前状态" size="small">
+        <StatusPanel />
+      </Card>
+
       <Row gutter={[12, 12]}>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={8}>
           <StatCard
             title="今日久坐时长"
             value={formatDuration(today?.sittingSeconds ?? 0)}
@@ -80,27 +134,27 @@ export function DashboardPage() {
             tone="primary"
           />
         </Col>
-        <Col xs={12} md={8} xl={4}>
-          <StatCard title="今日活动次数" value={`${today?.activityCount ?? 0} 次`} hint="已完成的活动" />
-        </Col>
-        <Col xs={12} md={8} xl={4}>
-          <StatCard
-            title="今日活动总时长"
-            value={formatDuration(today?.activitySeconds ?? 0)}
-            hint="不含键鼠空闲时间"
-          />
-        </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={8}>
           <StatCard
             title="当前连续久坐"
             value={formatDuration(status?.workSeconds ?? 0)}
             hint={status?.phase === "break" ? "活动期间不计入" : "当前这一轮工作"}
           />
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={8}>
           <StatCard title="下一次提醒" value={nextReminder} hint={status?.planName ?? "未选择计划"} />
         </Col>
-        <Col xs={12} md={8} xl={4}>
+        <Col xs={12} md={8} xl={8}>
+          <StatCard title="今日活动次数" value={`${today?.activityCount ?? 0} 次`} hint="已完成的活动" />
+        </Col>
+        <Col xs={12} md={8} xl={8}>
+          <StatCard
+            title="今日活动总时长"
+            value={formatDuration(today?.activitySeconds ?? 0)}
+            hint="不含键鼠空闲时间"
+          />
+        </Col>
+        <Col xs={12} md={8} xl={8}>
           <StatCard
             title="今日活动完成率"
             value={completionRate}
@@ -112,10 +166,6 @@ export function DashboardPage() {
           />
         </Col>
       </Row>
-
-      <Card title="当前状态" size="small">
-        <StatusPanel />
-      </Card>
 
       <Card
         title="最近 7 天趋势"

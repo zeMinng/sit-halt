@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import * as echarts from "echarts/core";
 import type { ECharts } from "echarts/core";
 import { BarChart, LineChart } from "echarts/charts";
@@ -33,7 +33,7 @@ interface TrendChartProps {
  * 包装库以 CJS 分发时，其子路径的默认导入在 Vite 开发模式下可能被解析成模块对象，
  * 作为组件渲染会报 "Element type is invalid" 并让整页白屏。
  */
-export function TrendChart({ data, height = 280 }: TrendChartProps) {
+export const TrendChart = memo(function TrendChart({ data, height = 280 }: TrendChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<ECharts | null>(null);
   // 主题变化时重新取色（CSS 变量挂在 .theme-light / .theme-dark 上）
@@ -44,14 +44,34 @@ export function TrendChart({ data, height = 280 }: TrendChartProps) {
     if (!el) return;
     const chart = echarts.init(el);
     chartRef.current = chart;
-    const observer = new ResizeObserver(() => chart.resize());
+
+    let resizeTimer: number | undefined;
+    let lastWidth = 0;
+    let lastHeight = 0;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      if (width === 0 || height === 0) return;
+      // 尺寸没有真正变化时不 resize，避免无谓重绘把悬停提示清掉
+      if (width === lastWidth && height === lastHeight) return;
+      lastWidth = width;
+      lastHeight = height;
+      if (resizeTimer) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => chart.resize(), 120);
+    });
     observer.observe(el);
+
     return () => {
       observer.disconnect();
+      if (resizeTimer) window.clearTimeout(resizeTimer);
       chart.dispose();
       chartRef.current = null;
     };
   }, []);
+
+  // 按内容值比对：引用变化但数据没变时不重建配置，避免清空当前悬停提示
+  const dataKey = JSON.stringify(data);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -80,6 +100,7 @@ export function TrendChart({ data, height = 280 }: TrendChartProps) {
         borderColor: border,
         borderWidth: 1,
         padding: [8, 12],
+        hideDelay: 300,
         textStyle: { color: text, fontSize: 12 },
         extraCssText:
           "border-radius:10px;box-shadow:0 6px 18px rgba(24,24,27,0.10);",
@@ -164,8 +185,10 @@ export function TrendChart({ data, height = 280 }: TrendChartProps) {
         },
       ],
     };
-    chart.setOption(option, true);
-  }, [data, themeSetting]);
+    // 合并更新而非全量重建：数据变化时保留当前悬停状态，不打断 tooltip
+    chart.setOption(option, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataKey, themeSetting]);
 
   return <div ref={containerRef} style={{ width: "100%", height }} />;
-}
+});

@@ -15,6 +15,10 @@ export function ReminderModal() {
   const runEngineAction = useAppStore((s) => s.runEngineAction);
   const [activityId, setActivityId] = useState<string | undefined>(undefined);
 
+  const methods = status?.reminderMethods ?? [];
+  // 未配置方式（空数组）时退回默认弹窗；勾选了 popup / fullscreen 才弹出窗口。
+  const wantsPopup = methods.length === 0 || methods.includes("popup") || methods.includes("fullscreen");
+
   useEffect(() => {
     if (!activityId && activities.length > 0) {
       setActivityId(activities.find((a) => a.enabled)?.id ?? activities[0]?.id);
@@ -22,12 +26,19 @@ export function ReminderModal() {
   }, [activities, activityId]);
 
   const open =
-    status?.phase === "reminding" && (status.snoozeRemainingSeconds ?? 0) === 0;
+    status?.phase === "reminding" &&
+    (status.snoozeRemainingSeconds ?? 0) === 0 &&
+    wantsPopup;
+
+  const fullscreen = status?.reminderMethods.includes("fullscreen") ?? false;
 
   return (
     <Modal
       open={Boolean(open)}
-      title="该起来活动一下了"
+      title={fullscreen ? "该起来活动一下了 · 全屏提醒" : "该起来活动一下了"}
+      width={fullscreen ? "100vw" : 520}
+      className={fullscreen ? "reminder-fullscreen" : undefined}
+      style={fullscreen ? { top: 0, maxWidth: "100vw", paddingBottom: 0 } : undefined}
       maskClosable={false}
       onCancel={() => runEngineAction(() => api.snooze())}
       footer={[
@@ -51,6 +62,12 @@ export function ReminderModal() {
       centered
     >
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        {fullscreen ? (
+          <div style={{ textAlign: "center", padding: "8px 0 16px" }}>
+            <div className="break-countdown">{formatDuration(status?.workSeconds ?? 0)}</div>
+            <Typography.Text type="secondary">已连续久坐，建议起身活动 3~5 分钟</Typography.Text>
+          </div>
+        ) : null}
         <Typography.Text>
           你已经在座位连续工作了{" "}
           <Typography.Text strong>

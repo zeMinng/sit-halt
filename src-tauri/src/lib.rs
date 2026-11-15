@@ -4,6 +4,7 @@ mod engine;
 mod error;
 mod models;
 mod platform;
+mod shortcuts;
 mod state;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -17,11 +18,13 @@ use state::AppState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -58,6 +61,9 @@ pub fn run() {
                 engine,
             });
 
+            // 3.1 注册全局快捷键（按已保存绑定；单个注册失败不阻断启动）
+            tauri::async_runtime::block_on(shortcuts::register_initial(&handle, &database.pool));
+
             // 4. 系统托盘
             build_tray(app)?;
 
@@ -88,6 +94,11 @@ pub fn run() {
             commands::delete_work_schedule,
             commands::backup_now,
             commands::list_backups,
+            commands::restore_backup,
+            commands::export_json,
+            commands::export_csv,
+            commands::import_json,
+            commands::reset_all_data,
             commands::list_activities,
             commands::save_activity,
             commands::delete_activity,
@@ -109,6 +120,9 @@ pub fn run() {
             commands::sitting_history,
             commands::table_count,
             commands::set_autostart,
+            commands::get_shortcuts,
+            commands::set_shortcut,
+            commands::reset_shortcuts,
         ])
         .run(tauri::generate_context!())
         .expect("启动 SitHalt 失败");

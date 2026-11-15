@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -29,6 +30,8 @@ import { useAppStore } from "@/stores/useAppStore";
 import type { ReminderPlan, ReminderPlanInput, WorkSchedule } from "@/types/contracts";
 import {
   COMPLETION_MODE_LABEL,
+  MODE_LABEL,
+  MODE_TAG_COLOR,
   formatDuration,
   minutesToSeconds,
   secondsToMinutes,
@@ -58,13 +61,6 @@ const MODE_OPTIONS = [
   { label: "智能模式（按活跃时长计时）", value: "smart" },
   { label: "自定义", value: "custom" },
 ];
-
-const MODE_LABEL: Record<string, string> = {
-  interval: "固定间隔",
-  pomodoro: "番茄",
-  smart: "智能",
-  custom: "自定义",
-};
 
 /** "09:30" → 570；格式不合法返回 null */
 function parseClock(text: string): number | null {
@@ -169,6 +165,7 @@ export function ReminderPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<ReminderPlan | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // 工作时间表（独立于计划字段的每周时段）
   const [scheduleForm] = Form.useForm<ScheduleFormValues>();
@@ -201,17 +198,26 @@ export function ReminderPage() {
   }, [activePlanId]);
 
   const openSchedule = () => {
-    scheduleForm.setFieldsValue({ weekday: 1, start: "09:00", end: "18:00", enabled: true });
     setScheduleOpen(true);
+  };
+
+  const applyScheduleValues = () => {
+    scheduleForm.setFieldsValue({ weekday: 1, start: "09:00", end: "18:00", enabled: true });
   };
 
   const submitSchedule = async () => {
     if (!activePlanId) return;
-    const values = await scheduleForm.validateFields();
+    let values;
+    try {
+      values = await scheduleForm.validateFields();
+    } catch {
+      return;
+    }
     const start = parseClock(values.start);
     const end = parseClock(values.end);
     if (start === null || end === null) return;
     setScheduleSaving(true);
+    setSaveError(null);
     try {
       await api.saveWorkSchedule({
         planId: activePlanId,
@@ -223,6 +229,8 @@ export function ReminderPage() {
       await loadSchedules(activePlanId);
       await refreshStatus();
       setScheduleOpen(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : JSON.stringify(error));
     } finally {
       setScheduleSaving(false);
     }
@@ -292,6 +300,21 @@ export function ReminderPage() {
 
   const openCreate = () => {
     setEditing(null);
+    setModalOpen(true);
+  };
+
+  const openEdit = (plan: ReminderPlan) => {
+    setEditing(plan);
+    setModalOpen(true);
+  };
+
+  // 弹窗 destroyOnClose，表单在关闭时被销毁；必须等弹窗打开、Form 挂载后再回填，
+  // 否则打开前的 setFieldsValue 不生效，必填项为空导致保存被校验拦住。
+  const applyFormValues = () => {
+    if (editing) {
+      form.setFieldsValue(planToForm(editing));
+      return;
+    }
     form.setFieldsValue({
       name: "自定义模式",
       description: "",
@@ -310,22 +333,25 @@ export function ReminderPage() {
       workEnd: "18:00",
       workDays: [1, 2, 3, 4, 5],
     });
-    setModalOpen(true);
-  };
-
-  const openEdit = (plan: ReminderPlan) => {
-    setEditing(plan);
-    form.setFieldsValue(planToForm(plan));
-    setModalOpen(true);
   };
 
   const submit = async () => {
-    const values = await form.validateFields();
+    let values: PlanFormValues;
+    try {
+      values = await form.validateFields();
+    } catch {
+      // 校验失败：字段下方已展示红字，弹窗保持打开，不再抛出未捕获的 Promise 异常。
+      return;
+    }
     setSaving(true);
+    setSaveError(null);
     try {
       await api.savePlan(formToInput(values, editing));
       await refreshPlans();
+      await refreshStatus();
       setModalOpen(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : JSON.stringify(error));
     } finally {
       setSaving(false);
     }
@@ -336,16 +362,41 @@ export function ReminderPage() {
     await refreshPlans();
   };
 
-  const columns: ColumnsType<ReminderPlan> = [
+  const methodLabel = (m: string) => METHOD_OPTIONS.find((o) => o.value === m)?.label ?? m;
+
+  const planWorkTime = (plan: ReminderPlan) => {
+    const days = plan.workDays.length
+      ? plan.workDays.map((d) => weekdayLabel(d)).join("、")
+      : "每天";
+    const time =
+      plan.workStart && plan.workEnd ? `${plan.workStart} ~ ${plan.workEnd}` : "全天运行";
+    return `${days} · ${time}`;
+  };
+
+  const COMPLETION_TAG_COLOR: Record<string, string> = {
+    auto: "default",
+    manual: "green",
+    ask: "gold",
+  };
+
+  const planColumns: ColumnsType<ReminderPlan> = [
     {
       title: "计划",
       dataIndex: "name",
       key: "name",
+      width: 230,
       render: (value: string, record) => (
-        <Space size={8}>
-          <Typography.Text strong>{value}</Typography.Text>
-          {record.isBuiltin ? <Tag>内置</Tag> : null}
-          {activePlanId === record.id ? <Tag color="blue">使用中</Tag> : null}
+        <Space direction="vertical" size={2}>
+          <Space size={8} wrap>
+            <Typography.Text strong>{value}</Typography.Text>
+            {record.isBuiltin ? <Tag>内置</Tag> : null}
+            {activePlanId === record.id ? <Tag color="blue">使用中</Tag> : null}
+          </Space>
+          {record.description ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>
+              {record.description}
+            </Typography.Text>
+          ) : null}
         </Space>
       ),
     },
@@ -353,61 +404,97 @@ export function ReminderPage() {
       title: "模式",
       dataIndex: "mode",
       key: "mode",
-      render: (value: string) => <Tag>{MODE_LABEL[value] ?? value}</Tag>,
+      width: 110,
+      render: (value: string) => (
+        <Tag color={MODE_TAG_COLOR[value]}>{MODE_LABEL[value] ?? value}</Tag>
+      ),
     },
     {
       title: "工作 / 活动",
       key: "duration",
-      render: (_, record) =>
-        `${formatDuration(record.workSeconds)} / ${formatDuration(record.breakSeconds)}`,
+      width: 120,
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text style={{ fontSize: 12 }}>
+            工作 {formatDuration(record.workSeconds)}
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            活动 {formatDuration(record.breakSeconds)}
+          </Typography.Text>
+        </Space>
+      ),
     },
     {
       title: "提醒方式",
       dataIndex: "reminderMethods",
       key: "reminderMethods",
       render: (methods: string[]) =>
-        methods.length
-          ? methods
-              .map((m) => METHOD_OPTIONS.find((o) => o.value === m)?.label ?? m)
-              .join("、")
-          : "未设置",
+        methods.length ? (
+          <Space size={[4, 4]} wrap>
+            {methods.map((m) => (
+              <Tag key={m}>{methodLabel(m)}</Tag>
+            ))}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">未设置</Typography.Text>
+        ),
     },
     {
       title: "完成方式",
       dataIndex: "completionMode",
       key: "completionMode",
-      render: (value: string) => COMPLETION_MODE_LABEL[value] ?? value,
+      width: 150,
+      render: (value: string) => (
+        <Tag color={COMPLETION_TAG_COLOR[value]}>
+          {COMPLETION_MODE_LABEL[value] ?? value}
+        </Tag>
+      ),
+    },
+    {
+      title: "工作时间",
+      key: "workTime",
+      width: 190,
+      render: (_, record) => (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {planWorkTime(record)}
+        </Typography.Text>
+      ),
     },
     {
       title: "操作",
       key: "actions",
-      width: 220,
-      render: (_, record) => (
-        <Space size={4}>
-          <Button
-            size="small"
-            type="link"
-            onClick={() => runEngineAction(() => api.activatePlan(record.id))}
-          >
-            使用
-          </Button>
-          <Button size="small" type="link" onClick={() => openEdit(record)}>
-            编辑
-          </Button>
-          <Popconfirm
-            title="删除这个计划？"
-            description="只删除计划配置，不影响已有统计记录。"
-            okText="删除"
-            cancelText="取消"
-            disabled={record.isBuiltin}
-            onConfirm={() => remove(record)}
-          >
-            <Button size="small" type="link" danger disabled={record.isBuiltin}>
-              删除
+      width: 190,
+      fixed: "right",
+      render: (_, record) => {
+        const inUse = activePlanId === record.id;
+        return (
+          <Space size={4}>
+            <Button
+              size="small"
+              type="primary"
+              disabled={inUse}
+              onClick={() => runEngineAction(() => api.activatePlan(record.id))}
+            >
+              {inUse ? "使用中" : "使用"}
             </Button>
-          </Popconfirm>
-        </Space>
-      ),
+            <Button size="small" type="link" onClick={() => openEdit(record)}>
+              编辑
+            </Button>
+            <Popconfirm
+              title="删除这个计划？"
+              description="只删除计划配置，不影响已有统计记录。"
+              okText="删除"
+              cancelText="取消"
+              disabled={record.isBuiltin}
+              onConfirm={() => remove(record)}
+            >
+              <Button size="small" type="link" danger disabled={record.isBuiltin}>
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -432,7 +519,7 @@ export function ReminderPage() {
             size="small"
             pagination={false}
             scroll={{ x: "max-content" }}
-            columns={columns}
+            columns={planColumns}
             dataSource={plans}
           />
         ) : (
@@ -542,12 +629,23 @@ export function ReminderPage() {
         title={editing ? `编辑计划 · ${editing.name}` : "新建提醒计划"}
         centered
         onCancel={() => setModalOpen(false)}
-        onOk={submit}
+        afterOpenChange={(open) => {
+          if (open) applyFormValues();
+        }}
+        onOk={() => void submit()}
         okText="保存"
         confirmLoading={saving}
         width={620}
         destroyOnClose
       >
+        {saveError ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`保存失败：${saveError}`}
+          />
+        ) : null}
         <Form form={form} layout="vertical" preserve={false}>
           <Row gutter={12}>
             <Col span={12}>
@@ -654,12 +752,23 @@ export function ReminderPage() {
         title="新增工作时段"
         centered
         onCancel={() => setScheduleOpen(false)}
+        afterOpenChange={(open) => {
+          if (open) applyScheduleValues();
+        }}
         onOk={submitSchedule}
         okText="保存"
         confirmLoading={scheduleSaving}
         width={460}
         destroyOnClose
       >
+        {saveError ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`保存失败：${saveError}`}
+          />
+        ) : null}
         <Form form={scheduleForm} layout="vertical" preserve={false}>
           <Form.Item
             name="weekday"

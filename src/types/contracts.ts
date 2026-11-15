@@ -6,6 +6,8 @@ export interface EngineStatus {
   phase: Phase;
   planId: string | null;
   planName: string | null;
+  /** 当前计划启用的提醒方式：notification / popup / sound / fullscreen / widget */
+  reminderMethods: string[];
   workSeconds: number;
   workTargetSeconds: number;
   workRemainingSeconds: number;
@@ -45,6 +47,11 @@ export interface WorkSchedule {
 }
 
 export type WorkScheduleInput = Omit<WorkSchedule, "id" | "createdAt"> & { id?: string | null };
+
+export type ShortcutAction = "toggleMain" | "pauseResume" | "startBreak" | "dnd";
+
+/** 动作 -> 全局快捷键 accelerator（如 "Ctrl+Alt+S"） */
+export type ShortcutMap = Record<ShortcutAction, string>;
 
 export interface BackupInfo {
   file: string;
@@ -144,6 +151,7 @@ export interface TodayStats {
 export interface AppInfo {
   name: string;
   version: string;
+  author: string;
   identifier: string;
   dbPath: string;
   dataDir: string;
@@ -158,11 +166,19 @@ export interface DbHealth {
   serverTime: string;
 }
 
+export interface MonthWeeklyPoint {
+  week: string;
+  activityCount: number;
+  activitySeconds: number;
+}
+
 export interface MonthSummary {
   month: string;
   sittingSeconds: number;
   activitySeconds: number;
   activityCount: number;
+  completionRate: number | null;
+  weekly: MonthWeeklyPoint[];
   daily: DailyPoint[];
 }
 
@@ -175,6 +191,7 @@ export type AppSettings = {
   notificationEnabled?: boolean;
   soundEnabled?: boolean;
   soundVolume?: number;
+  soundWave?: string;
   floatWidget?: boolean;
   backupIntervalDays?: number;
   backupKeep?: number;
