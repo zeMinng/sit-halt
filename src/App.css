@@ -1,33 +1,43 @@
 /* SitHalt 全局样式：配色集中在 theme.ts（antd token）+ 下方 CSS 变量，
    这里只处理布局细节与 antd token 覆盖不到的视觉（选中条、卡片阴影等）。 */
 
-/* ---------- 配色变量：与 theme.ts「竹青 + 暖白」同源 ---------- */
+/* ---------- 配色变量：与 theme.ts「暖橙 + 信息蓝 + 中性灰白」同源 ---------- */
 .theme-light {
-  --app-bg: #ecf3ef;
+  --app-bg: #ffffff;
+  --app-sider-bg: #f5f5f7;
   --app-surface: #ffffff;
-  --app-surface-muted: #f6faf8;
-  --app-border: #e4ece8;
-  --app-border-strong: #d7e2dc;
-  --app-text: #152420;
-  --app-text-muted: #6b7b74;
-  --app-primary: #12876f;
-  --app-primary-strong: #0c6a57;
-  --app-primary-soft: #e7f4ef;
-  --app-shadow-1: 0 1px 2px rgba(20, 45, 38, 0.05), 0 4px 14px rgba(20, 45, 38, 0.05);
-  --app-shadow-2: 0 2px 6px rgba(20, 45, 38, 0.06), 0 12px 28px rgba(20, 45, 38, 0.08);
+  --app-surface-muted: #f5f5f7;
+  --app-border: #e4e4e9;
+  --app-border-strong: #d6d6dd;
+  --app-text: #18181b;
+  --app-text-muted: #5b616e;
+  --app-primary: #f97316;
+  --app-primary-strong: #e8640c;
+  --app-primary-soft: #fff1e8;
+  --app-info: #0a84ff;
+  --app-info-strong: #0070d8;
+  --app-info-soft: #eaf3ff;
+  --app-menu-selected-bg: #e9e9ef;
+  --app-shadow-1: 0 1px 2px rgba(24, 24, 27, 0.05), 0 4px 14px rgba(24, 24, 27, 0.05);
+  --app-shadow-2: 0 2px 6px rgba(24, 24, 27, 0.06), 0 12px 28px rgba(24, 24, 27, 0.08);
 }
 
 .theme-dark {
-  --app-bg: #101614;
-  --app-surface: #171f1c;
-  --app-surface-muted: #1c2623;
-  --app-border: #26332e;
-  --app-border-strong: #31403a;
-  --app-text: #e8f0ec;
-  --app-text-muted: #8fa39b;
-  --app-primary: #3fbfa4;
-  --app-primary-strong: #6fd6bb;
-  --app-primary-soft: #173a32;
+  --app-bg: #141416;
+  --app-sider-bg: #17171a;
+  --app-surface: #1d1d20;
+  --app-surface-muted: #26262a;
+  --app-border: #2c2c31;
+  --app-border-strong: #3a3a40;
+  --app-text: #ecedef;
+  --app-text-muted: #a6abb5;
+  --app-primary: #fb8a3d;
+  --app-primary-strong: #ffa266;
+  --app-primary-soft: #3a2617;
+  --app-info: #409cff;
+  --app-info-strong: #74b7ff;
+  --app-info-soft: #16283d;
+  --app-menu-selected-bg: #26262a;
   --app-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28), 0 4px 14px rgba(0, 0, 0, 0.24);
   --app-shadow-2: 0 2px 6px rgba(0, 0, 0, 0.3), 0 12px 28px rgba(0, 0, 0, 0.34);
 }
@@ -57,7 +67,7 @@ body {
 
 .app-sider {
   border-right: 1px solid var(--app-border);
-  background: var(--app-surface);
+  background: var(--app-sider-bg);
 }
 
 .app-brand {
@@ -68,7 +78,7 @@ body {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.6px;
-  color: var(--app-primary-strong);
+  color: var(--app-text);
 }
 
 .app-brand-sub {
@@ -82,7 +92,7 @@ body {
   background: transparent;
 }
 
-/* 选中项：淡染底 + 主色文字。antd 6 的 itemSelectedBg 会被 itemBg 覆盖，这里显式接管 */
+/* 选中项：中性灰底 + 深色文字，图标保留暖橙。antd 6 的 itemSelectedBg 会被 itemBg 覆盖，这里显式接管 */
 .app-menu .ant-menu-item {
   color: var(--app-text-muted);
 }
@@ -94,8 +104,8 @@ body {
 
 .app-menu .ant-menu-item-selected,
 .app-menu .ant-menu-item-selected:hover {
-  background: var(--app-primary-soft) !important;
-  color: var(--app-primary-strong) !important;
+  background: var(--app-menu-selected-bg) !important;
+  color: var(--app-text) !important;
   font-weight: 600;
 }
 

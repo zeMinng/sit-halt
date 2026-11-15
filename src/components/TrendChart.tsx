@@ -60,15 +60,16 @@ export function TrendChart({ data, height = 280 }: TrendChartProps) {
 
     // 从当前主题容器读取配色变量，保证深浅色都能对上界面
     const css = getComputedStyle(el);
-    const primary = css.getPropertyValue("--app-primary").trim() || "#12876f";
-    const primaryStrong = css.getPropertyValue("--app-primary-strong").trim() || "#0c6a57";
-    const textMuted = css.getPropertyValue("--app-text-muted").trim() || "#6b7b74";
-    const border = css.getPropertyValue("--app-border").trim() || "#e4ece8";
+    const primary = css.getPropertyValue("--app-primary").trim() || "#f97316";
+    const primaryStrong = css.getPropertyValue("--app-primary-strong").trim() || "#e8640c";
+    const infoStrong = css.getPropertyValue("--app-info-strong").trim() || "#0070d8";
+    const textMuted = css.getPropertyValue("--app-text-muted").trim() || "#5b616e";
+    const border = css.getPropertyValue("--app-border").trim() || "#e4e4e9";
     const surface = css.getPropertyValue("--app-surface").trim() || "#ffffff";
-    const text = css.getPropertyValue("--app-text").trim() || "#152420";
+    const text = css.getPropertyValue("--app-text").trim() || "#18181b";
 
-    // 第二根柱用主色的浅色调，折线用暖琥珀，与「竹青 + 暖白」同一家族
-    const activityBar = themeSetting === "dark" ? "#6FC3AE" : "#9AD6C6";
+    // 第二根柱用信息蓝的浅色调，折线用暖琥珀，与「暖橙 + 信息蓝」同一家族
+    const activityBar = themeSetting === "dark" ? "#2E5C86" : "#BFD9FF";
     const countLine = themeSetting === "dark" ? "#D7A45F" : "#C98A3C";
 
     const option = {
@@ -81,7 +82,7 @@ export function TrendChart({ data, height = 280 }: TrendChartProps) {
         padding: [8, 12],
         textStyle: { color: text, fontSize: 12 },
         extraCssText:
-          "border-radius:10px;box-shadow:0 6px 18px rgba(20,45,38,0.10);",
+          "border-radius:10px;box-shadow:0 6px 18px rgba(24,24,27,0.10);",
         axisPointer: { type: "line", lineStyle: { color: border } },
         formatter: (
           params: Array<{ seriesName: string; value: number; axisValue: string }>,
@@ -148,7 +149,7 @@ export function TrendChart({ data, height = 280 }: TrendChartProps) {
           type: "bar",
           barMaxWidth: 22,
           itemStyle: { color: activityBar, borderRadius: [6, 6, 0, 0] },
-          emphasis: { itemStyle: { color: primary } },
+          emphasis: { itemStyle: { color: infoStrong } },
           data: data.map((d) => d.activitySeconds),
         },
         {

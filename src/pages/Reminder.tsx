@@ -345,7 +345,7 @@ export function ReminderPage() {
         <Space size={8}>
           <Typography.Text strong>{value}</Typography.Text>
           {record.isBuiltin ? <Tag>内置</Tag> : null}
-          {activePlanId === record.id ? <Tag color="green">使用中</Tag> : null}
+          {activePlanId === record.id ? <Tag color="blue">使用中</Tag> : null}
         </Space>
       ),
     },
