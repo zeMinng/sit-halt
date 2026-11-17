@@ -1,0 +1,436 @@
+/* SitHalt 全局样式：配色集中在 theme.ts（antd token）+ 下方 CSS 变量，
+   这里只处理布局细节与 antd token 覆盖不到的视觉（选中条、卡片阴影等）。 */
+
+/* ---------- 配色变量：与 theme.ts「暖橙 + 信息蓝 + 中性灰白」同源 ---------- */
+.theme-light {
+  --app-bg: #ffffff;
+  --app-sider-bg: #f5f5f7;
+  --app-surface: #ffffff;
+  --app-surface-muted: #f5f5f7;
+  --app-border: #e4e4e9;
+  --app-border-strong: #d6d6dd;
+  --app-text: #18181b;
+  --app-text-muted: #5b616e;
+  --app-primary: #f97316;
+  --app-primary-strong: #e8640c;
+  --app-primary-soft: #fff1e8;
+  --app-info: #0a84ff;
+  --app-info-strong: #0070d8;
+  --app-info-soft: #eaf3ff;
+  --app-menu-selected-bg: #e9e9ef;
+  --app-shadow-1: 0 1px 2px rgba(24, 24, 27, 0.05), 0 4px 14px rgba(24, 24, 27, 0.05);
+  --app-shadow-2: 0 2px 6px rgba(24, 24, 27, 0.06), 0 12px 28px rgba(24, 24, 27, 0.08);
+}
+
+.theme-dark {
+  --app-bg: #141416;
+  --app-sider-bg: #17171a;
+  --app-surface: #1d1d20;
+  --app-surface-muted: #26262a;
+  --app-border: #2c2c31;
+  --app-border-strong: #3a3a40;
+  --app-text: #ecedef;
+  --app-text-muted: #a6abb5;
+  --app-primary: #fb8a3d;
+  --app-primary-strong: #ffa266;
+  --app-primary-soft: #3a2617;
+  --app-info: #409cff;
+  --app-info-strong: #74b7ff;
+  --app-info-soft: #16283d;
+  --app-menu-selected-bg: #26262a;
+  --app-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28), 0 4px 14px rgba(0, 0, 0, 0.24);
+  --app-shadow-2: 0 2px 6px rgba(0, 0, 0, 0.3), 0 12px 28px rgba(0, 0, 0, 0.34);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  /* 桌面应用：界面文字默认不允许鼠标拖选，避免一拉一片蓝色高亮 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 输入类控件仍需可选可编辑，单独放开 */
+input,
+textarea,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.app-shell {
+  height: 100vh;
+  background: var(--app-bg);
+}
+
+.app-sider {
+  border-right: 1px solid var(--app-border);
+  background: var(--app-sider-bg);
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 22px 22px 14px;
+}
+
+.app-brand-logo {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex: none;
+}
+
+.app-brand-text {
+  min-width: 0;
+}
+
+.app-brand-name {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: var(--app-text);
+}
+
+.app-brand-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.about-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.about-brand-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex: none;
+}
+
+.about-brand-text {
+  min-width: 0;
+}
+
+.about-brand-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--app-text);
+}
+
+.about-brand-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.app-menu {
+  border-inline-end: none !important;
+  background: transparent;
+}
+
+/* 选中项：中性灰底 + 深色文字，图标保留暖橙。antd 6 的 itemSelectedBg 会被 itemBg 覆盖，这里显式接管 */
+.app-menu .ant-menu-item {
+  color: var(--app-text-muted);
+}
+
+.app-menu .ant-menu-item:hover {
+  background: var(--app-surface-muted) !important;
+  color: var(--app-text) !important;
+}
+
+.app-menu .ant-menu-item-selected,
+.app-menu .ant-menu-item-selected:hover {
+  background: var(--app-menu-selected-bg) !important;
+  color: var(--app-text) !important;
+  font-weight: 600;
+}
+
+.app-menu .ant-menu-item-selected .anticon {
+  color: var(--app-primary);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 24px;
+  background: var(--app-surface);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.app-content {
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+  padding: 20px 24px 40px;
+  overflow-y: auto;
+  background: var(--app-bg);
+}
+
+/* 统计卡：白底 + 细边框 + 柔阴影，替代原来的 2% 灰块 */
+.stat-card {
+  height: 100%;
+  padding: 16px;
+  text-align: center;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-1);
+  transition:
+    box-shadow 0.18s ease,
+    transform 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.stat-card:hover {
+  box-shadow: var(--app-shadow-2);
+  transform: translateY(-1px);
+  border-color: var(--app-border-strong);
+}
+
+.stat-card-title {
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  color: var(--app-text-muted);
+}
+
+.stat-card-value {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--app-text, inherit);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-card-value.is-primary {
+  color: var(--app-primary-strong);
+}
+
+.stat-card-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+/* 首页概览条：中性白卡，不用渐变和彩色底，保持简洁 */
+.hero-banner {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+}
+
+.hero-feature {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  height: 100%;
+  padding: 14px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+}
+
+.hero-feature-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 16px;
+  color: var(--app-text-muted);
+  background: var(--app-surface-muted);
+}
+
+.hero-feature-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--app-text);
+}
+
+.hero-feature-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--app-text-muted);
+}
+
+/* 首页状态主卡：阶段大字 + 大白话说明，主操作前置 */
+.status-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.status-hero-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.status-hero-phase {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.status-hero-hint {
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
+
+.status-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 其余卡片统一细边框 + 极轻阴影，避免一屏里阴影层级打架 */
+.ant-card {
+  border-color: var(--app-border);
+  box-shadow: var(--app-shadow-1);
+}
+
+/* 仅含空状态的卡片：内容垂直居中，避免 Empty 提示贴在卡片顶部 */
+.app-content .ant-card-body:has(> .ant-empty) {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 160px;
+}
+
+.ant-card .ant-card-head {
+  border-bottom-color: var(--app-border);
+}
+
+/* 卡片标题与表头加一点字重，配合淡背景更清爽 */
+.ant-card .ant-card-head-title {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.ant-table-thead > tr > th {
+  font-weight: 600 !important;
+}
+
+.break-countdown {
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--app-primary-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.page-section {
+  margin-bottom: 16px;
+}
+
+/* 弹窗：始终留在视口内；内容超高时在弹窗内部滚动，标题与按钮不会被挤出屏幕 */
+.ant-modal {
+  max-width: calc(100vw - 32px);
+}
+
+.ant-modal .ant-modal-container {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+}
+
+.ant-modal .ant-modal-header,
+.ant-modal .ant-modal-footer {
+  flex: none;
+}
+
+.ant-modal .ant-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 竖向滚动条按需出现，保留其占位，避免内容宽度在 15px 间跳动 */
+  scrollbar-gutter: stable;
+  word-break: break-word;
+  /* antd 表单 Row 的 gutter 用「负外边距 + 列内边距」实现，左右各外扩 6px。
+     弹窗主体是滚动容器，这 6px 会变成横向滚动条；用等量的内边距把空间让出来，
+     再用负外边距抵消，视觉位置不变，内容也不再溢出。 */
+  margin-inline: -6px;
+  padding-inline: 6px;
+}
+
+/* 全屏提醒：弹窗占满视口，主体内容垂直居中；标题与四个操作出口仍保留，不可阻断退出 */
+.reminder-fullscreen.ant-modal {
+  max-width: 100vw;
+  top: 0;
+  padding-bottom: 0;
+}
+
+.reminder-fullscreen .ant-modal-container {
+  max-height: 100vh;
+  height: 100vh;
+}
+
+.reminder-fullscreen .ant-modal-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* 滚动条本身也换成主题色系，避免默认灰色粗条破坏观感 */
+.app-content,
+.ant-modal .ant-modal-body {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-border-strong) transparent;
+}
+
+.app-content::-webkit-scrollbar,
+.ant-modal .ant-modal-body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.app-content::-webkit-scrollbar-thumb,
+.ant-modal .ant-modal-body::-webkit-scrollbar-thumb {
+  background: var(--app-border-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.app-content::-webkit-scrollbar-thumb:hover,
+.ant-modal .ant-modal-body::-webkit-scrollbar-thumb:hover {
+  background: var(--app-primary);
+  background-clip: padding-box;
+}
+
+.app-content::-webkit-scrollbar-track,
+.ant-modal .ant-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 窄窗口下内容区收紧，避免卡片贴边 */
+@media (max-width: 1100px) {
+  .app-content {
+    padding: 16px 16px 32px;
+  }
+}
