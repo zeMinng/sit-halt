@@ -80,6 +80,28 @@ pnpm tauri build --target universal-apple-darwin
 
 > 注意：通用二进制 / App Store 分发建议把 `tauri.conf.json > bundle > macOS > minimumSystemVersion` 提到 `12.0`；当前设为 `10.15`，仅本机架构安装可保持。
 
+### GitHub Actions 自动打包
+
+工作流文件：`.github/workflows/build-macos.yml`，无需本地装 Rust / Node 即可出包。
+
+**触发方式**
+
+- 推送 tag（如 `git tag v0.1.0 && git push origin v0.1.0`）：自动构建 arm64 + x86_64 双架构，并把 `.app` / `.dmg` 挂到对应 Release。
+- Actions 页面手动 `Run workflow`：只出构建产物（artifact，保留 30 天），不发 Release。
+
+**构建矩阵**
+
+| 架构 | Runner | 产物 |
+| --- | --- | --- |
+| `aarch64-apple-darwin`（M 系列） | `macos-latest` | `SitHalt.app` + `.dmg` |
+| `x86_64-apple-darwin`（Intel） | `macos-13` | `SitHalt.app` + `.dmg` |
+
+**说明**
+
+- CI 为**未签名**构建，产物在他人 Mac 上首次打开仍会被 Gatekeeper 拦截，处理方式见下一节。
+- 前端依赖按 `pnpm-lock.yaml` 锁定安装（`--frozen-lockfile`），Rust 产物走缓存加速。
+- 后续接入 Apple 签名 / 公证时，在仓库 Settings → Secrets 配置 `APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`，并在 build 步骤的 `env` 中引用即可。
+
 ## 五、未签名包在本机打开
 
 未经过 Apple 签名的包，首次双击会被 Gatekeeper 拦截。本机自用可任选其一：
