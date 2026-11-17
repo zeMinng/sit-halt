@@ -65,7 +65,7 @@ mod imp {
 
     // CoreGraphics 全局事件源：读取自最后一次键鼠事件以来的秒数。
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CGEventSourceSecondsSinceLastEventType(state_id: i64, event_type: u32) -> f64;
     }
 
